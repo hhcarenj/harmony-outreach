@@ -799,16 +799,22 @@ const TABS = [
   { id: "setup", label: "DB Setup", icon: "⚙️" },
 ];
 
+const ENV_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const ENV_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const ENV_FROM = "outreach@harmonycarenj.org";
+
 export default function App() {
-  const [config, setConfig] = useState({});
-  const [configured, setConfigured] = useState(false);
+  const autoConfig = ENV_URL && ENV_KEY
+    ? { SUPABASE_URL: ENV_URL, SUPABASE_ANON_KEY: ENV_KEY, FROM_EMAIL: ENV_FROM }
+    : {};
+  const [config, setConfig] = useState(autoConfig);
+  const [configured, setConfigured] = useState(!!(ENV_URL && ENV_KEY));
   const [activeTab, setActiveTab] = useState("contacts");
-  const [supabase, setSupabase] = useState(null);
+  const [supabase, setSupabase] = useState(
+    ENV_URL && ENV_KEY ? createClient(ENV_URL, ENV_KEY) : null
+  );
 
   const handleSave = (cfg) => {
-    // FIX: Use the official @supabase/supabase-js createClient instead of
-    // a manual fetch() wrapper. This handles auth headers, URL encoding,
-    // and RLS automatically — eliminating the connection issues.
     const client = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
     setSupabase(client);
     setConfigured(true);
