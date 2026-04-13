@@ -197,6 +197,8 @@ function ContactsTab({ supabase }) {
   const [importText, setImportText] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [loadError, setLoadError] = useState(null);
+  const [editingContact, setEditingContact] = useState(null);
+  const [editForm, setEditForm] = useState({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -243,6 +245,46 @@ function ContactsTab({ supabase }) {
         load();
       }
     } catch (e) { alert("Import error: " + e.message); }
+  };
+
+  const startEdit = (contact) => {
+    setEditingContact(contact.id);
+    setEditForm({
+      agency_name: contact.agency_name || "",
+      contact_name: contact.contact_name || "",
+      email: contact.email || "",
+      phone: contact.phone || "",
+      website: contact.website || "",
+      counties_served: contact.counties_served || "",
+      languages: contact.languages || "",
+      status: contact.status || "new",
+      notes: contact.notes || "",
+    });
+    setShowAdd(false);
+    setShowImport(false);
+  };
+
+  const saveEdit = async () => {
+    if (!editForm.agency_name) return;
+    await supabase
+      .from("sc_contacts")
+      .update({ ...editForm, updated_at: new Date().toISOString() })
+      .eq("id", editingContact);
+    setEditingContact(null);
+    setEditForm({});
+    load();
+  };
+
+  const cancelEdit = () => {
+    setEditingContact(null);
+    setEditForm({});
+  };
+
+  const deleteContact = async (id) => {
+    if (!confirm("Delete this contact permanently?")) return;
+    await supabase.from("sc_contacts").delete().eq("id", id);
+    if (editingContact === id) cancelEdit();
+    load();
   };
 
   const filtered = contacts.filter(c => {
@@ -313,6 +355,57 @@ function ContactsTab({ supabase }) {
         </div>
       )}
 
+      {editingContact && (
+        <div style={{ ...cardStyle, marginBottom: 20, borderColor: "#6366f155" }}>
+          <h3 style={{ color: "#a78bfa", fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Edit Contact</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
+            {[
+              { key: "agency_name", label: "Agency Name" },
+              { key: "contact_name", label: "Contact Name" },
+              { key: "email", label: "Email" },
+              { key: "phone", label: "Phone" },
+              { key: "website", label: "Website" },
+              { key: "counties_served", label: "Counties Served" },
+              { key: "languages", label: "Languages" },
+            ].map(({ key, label }) => (
+              <div key={key}>
+                <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>{label}</label>
+                <input
+                  value={editForm[key] || ""}
+                  onChange={e => setEditForm({ ...editForm, [key]: e.target.value })}
+                  placeholder={label}
+                  style={inputStyle}
+                />
+              </div>
+            ))}
+            <div>
+              <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>Status</label>
+              <select value={editForm.status || "new"} onChange={e => setEditForm({ ...editForm, status: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
+                <option value="new">New</option>
+                <option value="contacted">Contacted</option>
+                <option value="replied">Replied</option>
+                <option value="converted">Converted</option>
+              </select>
+            </div>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>Notes</label>
+            <textarea
+              value={editForm.notes || ""}
+              onChange={e => setEditForm({ ...editForm, notes: e.target.value })}
+              rows={3}
+              placeholder="Add notes about this contact..."
+              style={{ ...inputStyle, resize: "vertical" }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={saveEdit} style={btnPrimary}>Save Changes</button>
+            <button onClick={cancelEdit} style={btnSecondary}>Cancel</button>
+            <button onClick={() => deleteContact(editingContact)} style={{ ...btnSecondary, color: "#f87171", borderColor: "#f8717133", marginLeft: "auto" }}>Delete Contact</button>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div style={{ textAlign: "center", padding: 60, color: "#64748b" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>Loading contacts...
@@ -335,7 +428,7 @@ function ContactsTab({ supabase }) {
           <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
             <thead>
               <tr>
-                {["Agency", "Contact", "Email", "Phone", "Counties", "Status"].map(h => (
+                {["Agency", "Contact", "Email", "Phone", "Counties", "Status", ""].map(h => (
                   <th key={h} style={{ textAlign: "left", padding: "10px 14px", color: "#64748b", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
@@ -352,6 +445,16 @@ function ContactsTab({ supabase }) {
                     <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 99, fontSize: 11, fontWeight: 700, background: (statusColor[c.status] || "#3b82f6") + "22", color: statusColor[c.status] || "#3b82f6", textTransform: "capitalize" }}>
                       {c.status || "new"}
                     </span>
+                  </td>
+                  <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
+                    <button
+                      onClick={() => startEdit(c)}
+                      style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, padding: "4px 12px", cursor: "pointer", transition: "all 0.2s" }}
+                      onMouseEnter={e => { e.target.style.borderColor = "#6366f1"; e.target.style.color = "#a78bfa"; }}
+                      onMouseLeave={e => { e.target.style.borderColor = "#334155"; e.target.style.color = "#94a3b8"; }}
+                    >
+                      Edit
+                    </button>
                   </td>
                 </tr>
               ))}
