@@ -511,7 +511,27 @@ function ContactsTab({ supabase }) {
     return matchesSearch && matchesStatus;
   });
 
-  const statusColor = { new: "#3b82f6", contacted: "#f59e0b", replied: "#10b981", converted: "#8b5cf6" };
+  const STATUS_CYCLE = ["new", "contacted", "no_response", "followed_up", "warm", "converted", "not_interested"];
+  const statusColor = {
+    new: "#3b82f6",
+    contacted: "#f59e0b",
+    no_response: "#f87171",
+    followed_up: "#60a5fa",
+    warm: "#fbbf24",
+    converted: "#8b5cf6",
+    not_interested: "#6b7280",
+    replied: "#10b981",
+  };
+
+  const cycleStatus = async (contactId) => {
+    const contact = contacts.find(c => c.id === contactId);
+    if (!contact) return;
+    const currentIndex = STATUS_CYCLE.indexOf(contact.status || "new");
+    const nextIndex = (currentIndex + 1) % STATUS_CYCLE.length;
+    const nextStatus = STATUS_CYCLE[nextIndex];
+    await supabase.from("sc_contacts").update({ status: nextStatus, updated_at: new Date().toISOString() }).eq("id", contactId);
+    load();
+  };
 
   return (
     <div>
@@ -677,9 +697,33 @@ function ContactsTab({ supabase }) {
                   <td style={{ padding: "12px 14px", color: "#94a3b8", fontSize: 13, whiteSpace: "nowrap" }}>{c.phone || "—"}</td>
                   <td style={{ padding: "12px 14px", color: "#94a3b8", fontSize: 12, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.counties_served || "—"}</td>
                   <td style={{ padding: "12px 14px" }}>
-                    <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 99, fontSize: 11, fontWeight: 700, background: (statusColor[c.status] || "#3b82f6") + "22", color: statusColor[c.status] || "#3b82f6", textTransform: "capitalize" }}>
+                    <button
+                      onClick={() => cycleStatus(c.id)}
+                      title="Click to advance status"
+                      style={{
+                        display: "inline-block",
+                        padding: "3px 10px",
+                        borderRadius: 99,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        background: (statusColor[c.status] || "#3b82f6") + "22",
+                        color: statusColor[c.status] || "#3b82f6",
+                        border: `1px solid ${statusColor[c.status] || "#3b82f6"}33`,
+                        textTransform: "capitalize",
+                        cursor: "pointer",
+                        transition: "all 0.2s",
+                      }}
+                      onMouseEnter={e => {
+                        e.target.style.background = (statusColor[c.status] || "#3b82f6") + "44";
+                        e.target.style.opacity = "0.9";
+                      }}
+                      onMouseLeave={e => {
+                        e.target.style.background = (statusColor[c.status] || "#3b82f6") + "22";
+                        e.target.style.opacity = "1";
+                      }}
+                    >
                       {c.status || "new"}
-                    </span>
+                    </button>
                   </td>
                   <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
                     {sequences[c.id]
