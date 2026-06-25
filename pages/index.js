@@ -1,5 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
+import {
+  SEQUENCE_LABEL,
+  STEP_SUBJECTS,
+  TOTAL_STEPS,
+  sendDateForStep,
+  todayISO,
+} from "../lib/sequenceEmails";
 
 // ── Shared Styles ──
 const cardStyle = {
@@ -53,6 +60,165 @@ const pillStyle = (active) => ({
   color: active ? "#fff" : "#94a3b8",
   transition: "all 0.25s",
 });
+
+// ── Email Sequence helpers & UI ──
+// Creates an active sequence row for a contact. type = 'post_visit' (A) | 'cold_outreach' (B).
+async function createSequence(supabase, contact, type) {
+  const today = todayISO();
+  const row = {
+    contact_id: contact.id,
+    sequence_type: type,
+    visit_date: today,
+    next_send_date: today, // Email 1 sends today
+    current_step: 1,
+    status: "active",
+    contact_email: contact.email || null,
+    contact_name: contact.contact_name || null,
+    agency_name: contact.agency_name || null,
+  };
+  const { data, error } = await supabase.from("email_sequences").insert([row]).select();
+  if (error) {
+    alert("Could not start sequence: " + error.message);
+    return null;
+  }
+  return data?.[0] || null;
+}
+
+const SEQ_PILL_COLORS = {
+  active: "#3b82f6",
+  paused: "#f59e0b",
+  completed: "#94a3b8",
+  exited_reply: "#10b981",
+  stopped: "#94a3b8",
+};
+
+function sequencePillText(seq) {
+  const t = SEQUENCE_LABEL[seq.sequence_type] || "?";
+  switch (seq.status) {
+    case "active": return `Seq ${t} — Step ${seq.current_step} of ${TOTAL_STEPS}`;
+    case "paused": return `Paused — Step ${seq.current_step}`;
+    case "completed": return "Sequence complete";
+    case "exited_reply": return "Replied — exited";
+    case "stopped":
+      return seq.stopped_reason === "referred" ? "Referred — stopped"
+        : seq.stopped_reason === "unsubscribed" ? "Unsubscribed — stopped"
+        : "Stopped";
+    default: return seq.status;
+  }
+}
+
+function SequencePill({ seq, onClick }) {
+  if (!seq) return null;
+  const color = SEQ_PILL_COLORS[seq.status] || "#94a3b8";
+  const clickable = !!onClick;
+  return (
+    <span
+      onClick={onClick}
+      title={clickable ? "View sequence details" : ""}
+      style={{
+        display: "inline-block", padding: "3px 10px", borderRadius: 99, fontSize: 11,
+        fontWeight: 700, background: color + "22", color, whiteSpace: "nowrap",
+        cursor: clickable ? "pointer" : "default",
+      }}
+    >
+      {sequencePillText(seq)}
+    </span>
+  );
+}
+
+// Derive per-step status (sent / pending / skipped) from the row's current_step + status.
+function stepStatus(seq, step) {
+  if (seq.status === "completed") return "sent";
+  if (step < seq.current_step) return "sent";
+  if (step === seq.current_step) {
+    return (seq.status === "active" || seq.status === "paused") ? "pending" : "skipped";
+  }
+  return (seq.status === "active" || seq.status === "paused") ? "pending" : "skipped";
+}
+
+function SequenceModal({ supabase, seq, onClose, onChange }) {
+  const [busy, setBusy] = useState(false);
+  if (!seq) return null;
+  const subjects = STEP_SUBJECTS[seq.sequence_type] || [];
+  const statusColors = { sent: "#10b981", pending: "#3b82f6", skipped: "#64748b" };
+
+  const apply = async (update) => {
+    setBusy(true);
+    await supabase.from("email_sequences").update(update).eq("id", seq.id);
+    setBusy(false);
+    if (onChange) await onChange();
+    onClose();
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(2,6,23,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, maxWidth: 620, width: "100%", maxHeight: "85vh", overflow: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+          <div>
+            <h3 style={{ color: "#f1f5f9", fontSize: 18, margin: 0 }}>
+              Sequence {SEQUENCE_LABEL[seq.sequence_type]} — {seq.sequence_type === "post_visit" ? "Post in-person visit" : "Cold outreach"}
+            </h3>
+            <p style={{ color: "#64748b", fontSize: 13, margin: "4px 0 0" }}>
+              {seq.agency_name || "—"}{seq.contact_name ? ` · ${seq.contact_name}` : ""}
+            </p>
+          </div>
+          <button onClick={onClose} style={{ ...btnSecondary, padding: "4px 10px", fontSize: 12 }}>✕</button>
+        </div>
+
+        <div style={{ margin: "16px 0" }}>
+          <SequencePill seq={seq} />
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          {subjects.map((subj, i) => {
+            const step = i + 1;
+            const st = stepStatus(seq, step);
+            const date = sendDateForStep(seq.sequence_type, seq.visit_date, step);
+            return (
+              <div key={step} style={{ display: "flex", gap: 12, alignItems: "center", padding: "10px 0", borderBottom: "1px solid #1e293b" }}>
+                <div style={{ width: 22, height: 22, borderRadius: 99, background: "#0f172a", color: "#94a3b8", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{step}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{subj}</div>
+                  <div style={{ color: "#64748b", fontSize: 11, marginTop: 2 }}>Send date: {date}</div>
+                </div>
+                <span style={{ padding: "2px 9px", borderRadius: 99, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, background: statusColors[st] + "22", color: statusColors[st], flexShrink: 0 }}>{st}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {seq.stopped_reason && (
+          <p style={{ color: "#94a3b8", fontSize: 12, marginBottom: 12 }}>Stopped reason: <strong style={{ color: "#e2e8f0" }}>{seq.stopped_reason}</strong></p>
+        )}
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {seq.status === "active" && (
+            <button disabled={busy} onClick={() => apply({ status: "paused" })} style={btnSecondary}>⏸ Pause</button>
+          )}
+          {seq.status === "paused" && (
+            <button disabled={busy} onClick={() => apply({ status: "active" })} style={btnPrimary}>▶ Resume</button>
+          )}
+          {(seq.status === "active" || seq.status === "paused") && (
+            <>
+              <button disabled={busy} onClick={() => apply({ status: "stopped", stopped_reason: "manual" })} style={{ ...btnSecondary, color: "#f87171", borderColor: "#f8717133" }}>⏹ Stop</button>
+              <button disabled={busy} onClick={() => apply({ status: "exited_reply" })} style={{ ...btnSecondary, color: "#4ade80", borderColor: "#4ade8033" }}>✓ Mark as replied</button>
+              <button disabled={busy} onClick={() => apply({ status: "stopped", stopped_reason: "unsubscribed" })} style={btnSecondary}>Mark unsubscribed</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Toast({ message }) {
+  if (!message) return null;
+  return (
+    <div style={{ position: "fixed", bottom: 24, right: 24, background: "#111827", border: "1px solid #6366f1", borderRadius: 10, padding: "14px 20px", color: "#e2e8f0", fontSize: 14, fontWeight: 600, boxShadow: "0 10px 30px rgba(0,0,0,0.4)", zIndex: 1100, maxWidth: 360 }}>
+      ✨ {message}
+    </div>
+  );
+}
 
 // ── Config Panel ──
 // NOTE: RESEND_API_KEY is intentionally NOT in this form.
@@ -199,6 +365,12 @@ function ContactsTab({ supabase }) {
   const [loadError, setLoadError] = useState(null);
   const [editingContact, setEditingContact] = useState(null);
   const [editForm, setEditForm] = useState({});
+  // Sequence automation state
+  const [justVisited, setJustVisited] = useState(false);
+  const [sequences, setSequences] = useState({}); // contact_id -> latest sequence row
+  const [modalSeq, setModalSeq] = useState(null);
+  const [toast, setToast] = useState("");
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 4500); };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -215,14 +387,45 @@ function ContactsTab({ supabase }) {
     setLoading(false);
   }, [supabase]);
 
-  useEffect(() => { load(); }, [load]);
+  // Load sequences and keep only the most recent one per contact for the pill.
+  const loadSequences = useCallback(async () => {
+    const { data } = await supabase.from("email_sequences").select("*").order("created_at", { ascending: false });
+    const map = {};
+    (data || []).forEach((s) => { if (!map[s.contact_id]) map[s.contact_id] = s; });
+    setSequences(map);
+  }, [supabase]);
+
+  useEffect(() => { load(); loadSequences(); }, [load, loadSequences]);
 
   const addContact = async () => {
     if (!newContact.agency_name) return;
-    await supabase.from("sc_contacts").insert([newContact]);
+    const { data: inserted, error } = await supabase.from("sc_contacts").insert([newContact]).select();
+    if (error) { alert("Could not add contact: " + error.message); return; }
+    const contact = inserted?.[0];
+    if (contact) {
+      // No linked in-person visit → Sequence B (cold). Checkbox → Sequence A (post-visit).
+      const type = justVisited ? "post_visit" : "cold_outreach";
+      const seq = await createSequence(supabase, contact, type);
+      if (seq) {
+        const who = contact.contact_name || contact.agency_name;
+        showToast(`Sequence ${SEQUENCE_LABEL[type]} started for ${who} — Email 1 sends today`);
+      }
+    }
     setNewContact({ agency_name: "", contact_name: "", email: "", phone: "", counties_served: "" });
+    setJustVisited(false);
     setShowAdd(false);
     load();
+    loadSequences();
+  };
+
+  // Start a sequence for an existing contact (used from the edit panel).
+  const startSequenceForContact = async (contact, type) => {
+    const seq = await createSequence(supabase, contact, type);
+    if (seq) {
+      const who = contact.contact_name || contact.agency_name;
+      showToast(`Sequence ${SEQUENCE_LABEL[type]} started for ${who} — Email 1 sends today`);
+      loadSequences();
+    }
   };
 
   const bulkImport = async () => {
@@ -270,9 +473,20 @@ function ContactsTab({ supabase }) {
       .from("sc_contacts")
       .update({ ...editForm, updated_at: new Date().toISOString() })
       .eq("id", editingContact);
+    // Sequence exit conditions tied to contact status changes.
+    // (This app has no `relationship_stage`; "referred" is mapped to status = 'converted'.)
+    const seq = sequences[editingContact];
+    if (seq && (seq.status === "active" || seq.status === "paused")) {
+      if (editForm.status === "converted") {
+        await supabase.from("email_sequences").update({ status: "stopped", stopped_reason: "referred" }).eq("id", seq.id);
+      } else if (editForm.status === "replied") {
+        await supabase.from("email_sequences").update({ status: "exited_reply" }).eq("id", seq.id);
+      }
+    }
     setEditingContact(null);
     setEditForm({});
     load();
+    loadSequences();
   };
 
   const cancelEdit = () => {
@@ -335,6 +549,10 @@ function ContactsTab({ supabase }) {
                 value={newContact[k]} onChange={e => setNewContact({ ...newContact, [k]: e.target.value })} style={inputStyle} />
             ))}
           </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#94a3b8", fontSize: 13, marginBottom: 14, cursor: "pointer" }}>
+            <input type="checkbox" checked={justVisited} onChange={e => setJustVisited(e.target.checked)} style={{ accentColor: "#6366f1" }} />
+            <span>I just did an in-person visit today — start <strong style={{ color: "#a78bfa" }}>Sequence A</strong> (post-visit). Otherwise <strong style={{ color: "#7dd3fc" }}>Sequence B</strong> (cold outreach) starts.</span>
+          </label>
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={addContact} style={btnPrimary}>Save Contact</button>
             <button onClick={() => setShowAdd(false)} style={btnSecondary}>Cancel</button>
@@ -398,6 +616,23 @@ function ContactsTab({ supabase }) {
               style={{ ...inputStyle, resize: "vertical" }}
             />
           </div>
+          {(() => {
+            const seq = sequences[editingContact];
+            const editingObj = contacts.find(c => c.id === editingContact);
+            const hasRunning = seq && (seq.status === "active" || seq.status === "paused");
+            return (
+              <div style={{ marginBottom: 14, padding: "12px 14px", background: "#0f172a", borderRadius: 8, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span style={{ color: "#94a3b8", fontSize: 12, fontWeight: 600 }}>Sequence:</span>
+                {seq ? <SequencePill seq={seq} onClick={() => setModalSeq(seq)} /> : <span style={{ color: "#64748b", fontSize: 12 }}>None</span>}
+                {!hasRunning && editingObj && (
+                  <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
+                    <button onClick={() => startSequenceForContact(editingObj, "post_visit")} style={{ ...btnSecondary, padding: "6px 12px", fontSize: 12 }}>▶ Start Sequence A</button>
+                    <button onClick={() => startSequenceForContact(editingObj, "cold_outreach")} style={{ ...btnSecondary, padding: "6px 12px", fontSize: 12 }}>▶ Start Sequence B</button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={saveEdit} style={btnPrimary}>Save Changes</button>
             <button onClick={cancelEdit} style={btnSecondary}>Cancel</button>
@@ -428,7 +663,7 @@ function ContactsTab({ supabase }) {
           <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
             <thead>
               <tr>
-                {["Agency", "Contact", "Email", "Phone", "Counties", "Status", ""].map(h => (
+                {["Agency", "Contact", "Email", "Phone", "Counties", "Status", "Sequence", ""].map(h => (
                   <th key={h} style={{ textAlign: "left", padding: "10px 14px", color: "#64748b", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
@@ -445,6 +680,11 @@ function ContactsTab({ supabase }) {
                     <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 99, fontSize: 11, fontWeight: 700, background: (statusColor[c.status] || "#3b82f6") + "22", color: statusColor[c.status] || "#3b82f6", textTransform: "capitalize" }}>
                       {c.status || "new"}
                     </span>
+                  </td>
+                  <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
+                    {sequences[c.id]
+                      ? <SequencePill seq={sequences[c.id]} onClick={() => setModalSeq(sequences[c.id])} />
+                      : <span style={{ color: "#475569", fontSize: 12 }}>—</span>}
                   </td>
                   <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
                     <button
@@ -465,6 +705,9 @@ function ContactsTab({ supabase }) {
           )}
         </div>
       )}
+
+      {modalSeq && <SequenceModal supabase={supabase} seq={modalSeq} onClose={() => setModalSeq(null)} onChange={loadSequences} />}
+      <Toast message={toast} />
     </div>
   );
 }
@@ -893,11 +1136,150 @@ function SentTab({ supabase }) {
   );
 }
 
+// ── Sequences Tab ──
+function SequencesTab({ supabase }) {
+  const [sequences, setSequences] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState(null);
+  const [modalSeq, setModalSeq] = useState(null);
+  const [filter, setFilter] = useState("all");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from("email_sequences").select("*").order("created_at", { ascending: false });
+    setSequences(data || []);
+    setLoading(false);
+  }, [supabase]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const runCheck = async () => {
+    setRunning(true);
+    setRunResult(null);
+    try {
+      const res = await fetch("/api/cron/sequence-runner", {
+        method: "POST",
+        headers: { "x-manual-trigger": "1" },
+      });
+      const data = await res.json();
+      setRunResult(data);
+    } catch (e) {
+      setRunResult({ error: e.message });
+    }
+    setRunning(false);
+    load();
+  };
+
+  const counts = sequences.reduce((a, s) => { a[s.status] = (a[s.status] || 0) + 1; return a; }, {});
+  const filtered = sequences.filter((s) => (filter === "all" ? true : s.status === filter));
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ color: "#f1f5f9", fontSize: 20, margin: 0 }}>Email Sequences</h2>
+          <p style={{ color: "#64748b", fontSize: 13, margin: "4px 0 0" }}>
+            {sequences.length} total · {counts.active || 0} active · {counts.paused || 0} paused · {counts.completed || 0} complete
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <select value={filter} onChange={(e) => setFilter(e.target.value)} style={{ ...inputStyle, width: "auto", cursor: "pointer" }}>
+            <option value="all">All ({sequences.length})</option>
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+            <option value="completed">Completed</option>
+            <option value="exited_reply">Replied — exited</option>
+            <option value="stopped">Stopped</option>
+          </select>
+          <button onClick={runCheck} disabled={running} style={{ ...btnPrimary, opacity: running ? 0.5 : 1 }}>
+            {running ? "⏳ Running..." : "▶ Run sequence check"}
+          </button>
+        </div>
+      </div>
+
+      <p style={{ color: "#475569", fontSize: 12, marginBottom: 16 }}>
+        “Run sequence check” triggers the daily runner now — it sends every step whose send date is due today. The same job runs automatically each morning via Vercel Cron.
+      </p>
+
+      {runResult && (
+        <div style={{ ...cardStyle, marginBottom: 20, borderColor: runResult.error ? "#f8717155" : "#6366f155" }}>
+          {runResult.error ? (
+            <p style={{ color: "#f87171", fontSize: 13, margin: 0 }}>Error: {runResult.error}</p>
+          ) : (
+            <>
+              <p style={{ color: "#e2e8f0", fontSize: 14, fontWeight: 600, margin: "0 0 8px" }}>{runResult.message}</p>
+              {(runResult.results || []).length > 0 && (
+                <div style={{ maxHeight: 200, overflow: "auto" }}>
+                  {runResult.results.map((r, i) => (
+                    <div key={i} style={{ display: "flex", gap: 10, padding: "5px 0", borderBottom: "1px solid #0f172a", fontSize: 12 }}>
+                      <span style={{ color: r.status === "sent" ? "#4ade80" : r.status === "skipped" ? "#94a3b8" : "#f87171", fontWeight: 700, minWidth: 18 }}>
+                        {r.status === "sent" ? "✅" : r.status === "skipped" ? "⏭" : "❌"}
+                      </span>
+                      <span style={{ color: "#e2e8f0", minWidth: 200 }}>{r.agency || "—"}</span>
+                      <span style={{ color: "#64748b" }}>{r.step ? `Step ${r.step}` : ""} {r.subject || r.error || r.reason || ""}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ textAlign: "center", padding: 60, color: "#64748b" }}>Loading sequences...</div>
+      ) : filtered.length === 0 ? (
+        <div style={{ ...cardStyle, textAlign: "center", padding: 48, color: "#64748b" }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>🔁</div>
+          <p style={{ fontSize: 15, color: "#94a3b8", marginBottom: 6 }}>No sequences yet</p>
+          <p style={{ fontSize: 13 }}>Sequences start automatically when you add a contact (Sequence B) or log an in-person visit (Sequence A).</p>
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+            <thead>
+              <tr>
+                {["Agency", "Contact", "Type", "Status", "Next Send", "Step", ""].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "10px 14px", color: "#64748b", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((s) => (
+                <tr key={s.id} style={{ borderBottom: "1px solid #1e293b" }}>
+                  <td style={{ padding: "12px 14px", color: "#e2e8f0", fontSize: 13, fontWeight: 600, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.agency_name || "—"}</td>
+                  <td style={{ padding: "12px 14px", color: "#94a3b8", fontSize: 13 }}>{s.contact_name || "—"}</td>
+                  <td style={{ padding: "12px 14px", color: "#7dd3fc", fontSize: 13, whiteSpace: "nowrap" }}>Seq {SEQUENCE_LABEL[s.sequence_type]}</td>
+                  <td style={{ padding: "12px 14px" }}><SequencePill seq={s} onClick={() => setModalSeq(s)} /></td>
+                  <td style={{ padding: "12px 14px", color: "#94a3b8", fontSize: 12, whiteSpace: "nowrap" }}>{s.next_send_date || "—"}</td>
+                  <td style={{ padding: "12px 14px", color: "#94a3b8", fontSize: 13 }}>{s.current_step} / {TOTAL_STEPS}</td>
+                  <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
+                    <button
+                      onClick={() => setModalSeq(s)}
+                      style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, padding: "4px 12px", cursor: "pointer" }}
+                    >
+                      View
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {modalSeq && <SequenceModal supabase={supabase} seq={modalSeq} onClose={() => setModalSeq(null)} onChange={load} />}
+    </div>
+  );
+}
+
 // ── Main App ──
 const TABS = [
   { id: "contacts", label: "Contacts", icon: "👥" },
   { id: "templates", label: "Templates", icon: "📝" },
   { id: "campaigns", label: "Campaigns", icon: "🚀" },
+  { id: "sequences", label: "Sequences", icon: "🔁" },
   { id: "sent", label: "Sent Log", icon: "📬" },
   { id: "setup", label: "DB Setup", icon: "⚙️" },
 ];
@@ -956,6 +1338,7 @@ export default function App() {
         {activeTab === "contacts" && <ContactsTab supabase={supabase} />}
         {activeTab === "templates" && <TemplatesTab supabase={supabase} />}
         {activeTab === "campaigns" && <CampaignsTab supabase={supabase} config={config} />}
+        {activeTab === "sequences" && <SequencesTab supabase={supabase} />}
         {activeTab === "sent" && <SentTab supabase={supabase} />}
         {activeTab === "setup" && <SetupTab />}
       </div>
