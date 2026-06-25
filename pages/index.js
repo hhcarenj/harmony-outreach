@@ -1318,12 +1318,641 @@ function SequencesTab({ supabase }) {
   );
 }
 
+// ── Tracker Tab (CRM pipeline / activity log / follow-ups) — fully self-contained ──
+const TRK_ORG_TYPES = [
+  { value: "support_coordination", label: "Support Coordination", color: "#14b8a6" },
+  { value: "nursing_home", label: "Nursing Home", color: "#3b82f6" },
+  { value: "rehab_center", label: "Rehab Center", color: "#8b5cf6" },
+  { value: "assisted_living", label: "Assisted Living", color: "#f59e0b" },
+  { value: "doctors_office", label: "Doctor's Office", color: "#fb7185" },
+  { value: "adult_day_program", label: "Adult Day Program", color: "#22c55e" },
+  { value: "networking", label: "Networking", color: "#6b7280" },
+  { value: "insurance_company", label: "Insurance Company", color: "#ec4899" },
+];
+const TRK_ORG_TYPE_COLOR = Object.fromEntries(TRK_ORG_TYPES.map((t) => [t.value, t.color]));
+const TRK_ORG_TYPE_LABEL = Object.fromEntries(TRK_ORG_TYPES.map((t) => [t.value, t.label]));
+
+const TRK_STAGE_CYCLE = ["cold", "warm", "referred"];
+const TRK_STAGE_COLOR = { cold: "#ef4444", warm: "#f59e0b", referred: "#22c55e" };
+
+const TRK_RECEPTIVITY_CYCLE = ["unknown", "receptive", "neutral", "not_receptive"];
+const TRK_RECEPTIVITY_COLOR = { unknown: "#6b7280", receptive: "#22c55e", neutral: "#f59e0b", not_receptive: "#ef4444" };
+
+const TRK_ROLE_CYCLE = ["unknown", "gatekeeper", "decision_maker", "champion", "neutral", "blocker"];
+const TRK_ROLE_COLOR = { unknown: "#6b7280", gatekeeper: "#f59e0b", decision_maker: "#8b5cf6", champion: "#fbbf24", neutral: "#94a3b8", blocker: "#ef4444" };
+
+const TRK_ACTIVITY_TYPES = [
+  { value: "call", label: "Call", points: 10, icon: "📞" },
+  { value: "email", label: "Email", points: 5, icon: "✉️" },
+  { value: "in_person_visit", label: "In-Person Visit", points: 25, icon: "🤝" },
+  { value: "drop_off", label: "Drop-off", points: 15, icon: "📦" },
+  { value: "followup_call", label: "Follow-up Call", points: 10, icon: "🔁" },
+  { value: "text", label: "Text", points: 5, icon: "💬" },
+  { value: "referral_received", label: "Referral Received", points: 100, icon: "⭐" },
+];
+const TRK_POINTS = Object.fromEntries(TRK_ACTIVITY_TYPES.map((a) => [a.value, a.points]));
+const TRK_ACTIVITY_LABEL = Object.fromEntries(TRK_ACTIVITY_TYPES.map((a) => [a.value, a.label]));
+const TRK_ACTIVITY_ICON = Object.fromEntries(TRK_ACTIVITY_TYPES.map((a) => [a.value, a.icon]));
+
+const TRK_OUTCOMES = ["", "positive", "neutral", "no_answer", "left_message", "referral_received", "not_interested"];
+
+const TRK_TASK_TYPES = [
+  { value: "call", label: "Call", activity: "call" },
+  { value: "email", label: "Email", activity: "email" },
+  { value: "visit", label: "Visit", activity: "in_person_visit" },
+  { value: "send_materials", label: "Send Materials", activity: "drop_off" },
+];
+const TRK_TASK_ACTIVITY = Object.fromEntries(TRK_TASK_TYPES.map((t) => [t.value, t.activity]));
+
+function trkToday() { return new Date().toISOString().slice(0, 10); }
+function trkDaysSince(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  const t = new Date(`${trkToday()}T00:00:00Z`);
+  return Math.round((t - d) / 86400000);
+}
+function trkPretty(s) { return (s || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()); }
+function trkWeekKey(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  const day = d.getUTCDay();
+  const diff = day === 0 ? 6 : day - 1; // back to Monday
+  d.setUTCDate(d.getUTCDate() - diff);
+  return d.toISOString().slice(0, 10);
+}
+function trkPrevWeek(weekKey) {
+  const d = new Date(`${weekKey}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 7);
+  return d.toISOString().slice(0, 10);
+}
+// Consecutive weeks (most recent) with 5+ distinct contacts in activities.
+function trkComputeStreak(activities) {
+  const byWeek = {};
+  for (const a of activities) {
+    if (!a.activity_date || !a.contact_id) continue;
+    const k = trkWeekKey(a.activity_date);
+    (byWeek[k] = byWeek[k] || new Set()).add(a.contact_id);
+  }
+  let streak = 0;
+  let cursor = trkWeekKey(trkToday());
+  let firstIter = true;
+  while (true) {
+    const set = byWeek[cursor];
+    if (set && set.size >= 5) { streak++; cursor = trkPrevWeek(cursor); firstIter = false; }
+    else if (firstIter) { cursor = trkPrevWeek(cursor); firstIter = false; } // skip in-progress current week once
+    else break;
+  }
+  return streak;
+}
+
+function TrkBadge({ text, color, onClick, title, star }) {
+  return (
+    <span
+      onClick={onClick}
+      title={title || (onClick ? "Click to cycle" : "")}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 99,
+        fontSize: 11, fontWeight: 700, background: color + "22", color, border: `1px solid ${color}33`,
+        cursor: onClick ? "pointer" : "default", whiteSpace: "nowrap", textTransform: "capitalize",
+      }}
+    >
+      {star && <span style={{ color: "#fbbf24" }}>★</span>}{text}
+    </span>
+  );
+}
+
+function TrackerTab({ supabase }) {
+  const [subView, setSubView] = useState("pipeline");
+  const [pipelineMode, setPipelineMode] = useState("org");
+  const [loading, setLoading] = useState(true);
+  const [contacts, setContacts] = useState([]);
+  const [organizations, setOrganizations] = useState([]);
+  const [activities, setActivities] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [expandedOrgs, setExpandedOrgs] = useState(new Set());
+
+  // Activity log filters + modal
+  const [filterType, setFilterType] = useState("all");
+  const [filterFrom, setFilterFrom] = useState("");
+  const [filterTo, setFilterTo] = useState("");
+  const [orgSearch, setOrgSearch] = useState("");
+  const [showLogModal, setShowLogModal] = useState(false);
+  const emptyLog = { contact_id: "", activity_type: "call", activity_date: trkToday(), location: "", person_met: "", outcome: "", notes: "" };
+  const [logForm, setLogForm] = useState(emptyLog);
+  const [logSearch, setLogSearch] = useState("");
+
+  // Follow-up modal + inline completion
+  const [showTaskModal, setShowTaskModal] = useState(false);
+  const emptyTask = { contact_id: "", task_type: "call", due_date: trkToday(), priority: "normal", notes: "" };
+  const [taskForm, setTaskForm] = useState(emptyTask);
+  const [taskSearch, setTaskSearch] = useState("");
+  const [completingTask, setCompletingTask] = useState(null);
+  const [completingOutcome, setCompletingOutcome] = useState("");
+
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    const [c, o, a, t] = await Promise.all([
+      supabase.from("sc_contacts").select("*"),
+      supabase.from("organizations").select("*"),
+      supabase.from("outreach_activities").select("*").order("activity_date", { ascending: false }),
+      supabase.from("followup_tasks").select("*").order("due_date", { ascending: true }),
+    ]);
+    setContacts(c.data || []);
+    setOrganizations(o.data || []);
+    setActivities(a.data || []);
+    setTasks(t.data || []);
+    setLoading(false);
+  }, [supabase]);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  const contactLabel = (c) => `${c.contact_name || "(no name)"} · ${c.agency_name || ""}`;
+
+  // ── Optimistic badge cycles ──
+  const cycleOrgStage = async (org) => {
+    const next = TRK_STAGE_CYCLE[(TRK_STAGE_CYCLE.indexOf(org.relationship_stage || "cold") + 1) % TRK_STAGE_CYCLE.length];
+    setOrganizations((p) => p.map((o) => (o.id === org.id ? { ...o, relationship_stage: next } : o)));
+    await supabase.from("organizations").update({ relationship_stage: next, updated_at: new Date().toISOString() }).eq("id", org.id);
+  };
+  const cycleContactStage = async (c) => {
+    const next = TRK_STAGE_CYCLE[(TRK_STAGE_CYCLE.indexOf(c.relationship_stage || "cold") + 1) % TRK_STAGE_CYCLE.length];
+    setContacts((p) => p.map((x) => (x.id === c.id ? { ...x, relationship_stage: next } : x)));
+    await supabase.from("sc_contacts").update({ relationship_stage: next, updated_at: new Date().toISOString() }).eq("id", c.id);
+  };
+  const cycleReceptivity = async (c) => {
+    const next = TRK_RECEPTIVITY_CYCLE[(TRK_RECEPTIVITY_CYCLE.indexOf(c.receptivity || "unknown") + 1) % TRK_RECEPTIVITY_CYCLE.length];
+    setContacts((p) => p.map((x) => (x.id === c.id ? { ...x, receptivity: next } : x)));
+    await supabase.from("sc_contacts").update({ receptivity: next, updated_at: new Date().toISOString() }).eq("id", c.id);
+  };
+  const cycleRole = async (c) => {
+    const next = TRK_ROLE_CYCLE[(TRK_ROLE_CYCLE.indexOf(c.contact_role || "unknown") + 1) % TRK_ROLE_CYCLE.length];
+    setContacts((p) => p.map((x) => (x.id === c.id ? { ...x, contact_role: next } : x)));
+    await supabase.from("sc_contacts").update({ contact_role: next, updated_at: new Date().toISOString() }).eq("id", c.id);
+  };
+
+  // ── Shared: write an activity + award points + side effects ──
+  const logActivityRow = async ({ contact, activity_type, activity_date, location, person_met, outcome, notes }) => {
+    const pts = TRK_POINTS[activity_type] || 0;
+    await supabase.from("outreach_activities").insert([{
+      contact_id: contact.id,
+      organization_id: contact.organization_id || null,
+      activity_type,
+      activity_date,
+      location: location || null,
+      person_met: person_met || null,
+      outcome: outcome || null,
+      notes: notes || null,
+      points_awarded: pts,
+    }]);
+    await supabase.from("sc_contacts").update({
+      lead_score: (contact.lead_score || 0) + pts,
+      last_activity_date: activity_date,
+      updated_at: new Date().toISOString(),
+    }).eq("id", contact.id);
+    if (contact.organization_id) {
+      const org = organizations.find((o) => o.id === contact.organization_id);
+      if (org) {
+        await supabase.from("organizations").update({ lead_score: (org.lead_score || 0) + pts, updated_at: new Date().toISOString() }).eq("id", org.id);
+      }
+    }
+    // Auto-create a post_visit sequence when an in-person visit is logged and none is active.
+    if (activity_type === "in_person_visit") {
+      const { data: existing } = await supabase.from("email_sequences").select("id").eq("contact_id", contact.id).eq("status", "active").limit(1);
+      if (!existing || existing.length === 0) {
+        await supabase.from("email_sequences").insert([{
+          contact_id: contact.id,
+          sequence_type: "post_visit",
+          visit_date: activity_date,
+          next_send_date: activity_date,
+          current_step: 1,
+          status: "active",
+          contact_email: contact.email || null,
+          contact_name: contact.contact_name || null,
+          agency_name: contact.agency_name || null,
+        }]);
+      }
+    }
+  };
+
+  const saveActivity = async () => {
+    const contact = contacts.find((c) => c.id === logForm.contact_id);
+    if (!contact || !logForm.activity_type) { alert("Pick a contact and activity type."); return; }
+    const outcome = logForm.outcome || (logForm.activity_type === "referral_received" ? "referral_received" : "");
+    await logActivityRow({ contact, ...logForm, outcome });
+    setShowLogModal(false);
+    setLogForm(emptyLog);
+    setLogSearch("");
+    loadAll();
+  };
+
+  const saveTask = async () => {
+    const contact = contacts.find((c) => c.id === taskForm.contact_id);
+    if (!contact || !taskForm.task_type || !taskForm.due_date) { alert("Pick a contact, task type, and due date."); return; }
+    await supabase.from("followup_tasks").insert([{
+      contact_id: contact.id,
+      organization_id: contact.organization_id || null,
+      task_type: taskForm.task_type,
+      due_date: taskForm.due_date,
+      priority: taskForm.priority,
+      notes: taskForm.notes || null,
+    }]);
+    if (!contact.next_followup_date || taskForm.due_date < contact.next_followup_date) {
+      await supabase.from("sc_contacts").update({ next_followup_date: taskForm.due_date, updated_at: new Date().toISOString() }).eq("id", contact.id);
+    }
+    setShowTaskModal(false);
+    setTaskForm(emptyTask);
+    setTaskSearch("");
+    loadAll();
+  };
+
+  const completeTask = async (task) => {
+    await supabase.from("followup_tasks").update({ completed: true, completed_at: new Date().toISOString() }).eq("id", task.id);
+    const contact = contacts.find((c) => c.id === task.contact_id);
+    if (contact) {
+      const activity_type = TRK_TASK_ACTIVITY[task.task_type] || "call";
+      await logActivityRow({ contact, activity_type, activity_date: trkToday(), outcome: completingOutcome || "", notes: task.notes || "" });
+    }
+    setCompletingTask(null);
+    setCompletingOutcome("");
+    loadAll();
+  };
+
+  // ── Derived stats ──
+  const countStage = (st) => contacts.filter((c) => (c.relationship_stage || "cold") === st).length;
+  const totalReferrals = activities.filter((a) => a.outcome === "referral_received").length;
+  const totalPoints = contacts.reduce((s, c) => s + (c.lead_score || 0), 0);
+  const streak = trkComputeStreak(activities);
+
+  const toggleOrg = (id) => setExpandedOrgs((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  // ── Org milestone badges (computed, never stored) ──
+  const orgMilestones = (org) => {
+    const acts = activities.filter((a) => a.organization_id === org.id);
+    const orgContacts = contacts.filter((c) => c.organization_id === org.id);
+    const recent = acts.filter((a) => { const d = trkDaysSince(a.activity_date); return d != null && d <= 14; });
+    const referrals = acts.filter((a) => a.outcome === "referral_received");
+    return [
+      { label: "🚪 Door Opened", on: acts.length >= 1 },
+      { label: "👥 Multi-Touch", on: orgContacts.length >= 2 },
+      { label: "🔑 Found the Key", on: !!org.champion_contact_id },
+      { label: "🔥 On Fire", on: recent.length >= 3 },
+      { label: "✅ Referred", on: referrals.length >= 1 },
+      { label: "💎 VIP", on: referrals.length >= 3 },
+    ].filter((m) => m.on);
+  };
+
+  const pillToggle = (active) => ({ ...pillStyle(active), padding: "6px 16px", fontSize: 12 });
+
+  // ── Renderers ──
+  const renderStatsBar = () => (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 10, marginBottom: 20 }}>
+      {[
+        { label: "Cold", value: countStage("cold"), color: "#ef4444" },
+        { label: "Warm", value: countStage("warm"), color: "#f59e0b" },
+        { label: "Referred", value: countStage("referred"), color: "#22c55e" },
+        { label: "Referrals", value: totalReferrals, color: "#a78bfa" },
+        { label: "Total Points", value: totalPoints, color: "#0ea5e9" },
+        { label: "🔥 Streak", value: `${streak} wk`, color: "#fb923c" },
+      ].map((s) => (
+        <div key={s.label} style={{ ...cardStyle, padding: 14, textAlign: "center" }}>
+          <div style={{ color: s.color, fontSize: 24, fontWeight: 800 }}>{s.value}</div>
+          <div style={{ color: "#64748b", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginTop: 2 }}>{s.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+
+  const renderOrgCard = (org) => {
+    const orgContacts = contacts.filter((c) => c.organization_id === org.id);
+    const champion = contacts.find((c) => c.id === org.champion_contact_id);
+    const expanded = expandedOrgs.has(org.id);
+    const stage = org.relationship_stage || "cold";
+    return (
+      <div key={org.id} style={{ ...cardStyle, padding: 14, marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={() => toggleOrg(org.id)} style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 13 }}>{expanded ? "▾" : "▸"}</button>
+          <span style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 14 }}>{org.name}</span>
+          <TrkBadge text={TRK_ORG_TYPE_LABEL[org.org_type] || org.org_type} color={TRK_ORG_TYPE_COLOR[org.org_type] || "#6b7280"} />
+          <TrkBadge text={stage} color={TRK_STAGE_COLOR[stage]} onClick={() => cycleOrgStage(org)} />
+          <span style={{ color: "#0ea5e9", fontSize: 12, fontWeight: 700 }}>⚡ {org.lead_score || 0}</span>
+          {champion && <span style={{ color: "#fbbf24", fontSize: 12, fontWeight: 600 }} title="Champion">★ {champion.contact_name || champion.agency_name}</span>}
+        </div>
+        {orgMilestones(org).length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, paddingLeft: 24 }}>
+            {orgMilestones(org).map((m) => (
+              <span key={m.label} style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 99, background: "#1e293b", color: "#cbd5e1" }}>{m.label}</span>
+            ))}
+          </div>
+        )}
+        {expanded && (
+          <div style={{ marginTop: 10, paddingLeft: 24 }}>
+            {orgContacts.length === 0 ? (
+              <p style={{ color: "#64748b", fontSize: 12 }}>No contacts linked to this organization.</p>
+            ) : orgContacts.map((c) => {
+              const ds = trkDaysSince(c.last_activity_date);
+              return (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderTop: "1px solid #1e293b", flexWrap: "wrap" }}>
+                  <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, minWidth: 140 }}>{c.contact_name || "—"}</span>
+                  <span style={{ color: "#94a3b8", fontSize: 12, minWidth: 100 }}>{c.title || "—"}</span>
+                  <TrkBadge text={c.receptivity || "unknown"} color={TRK_RECEPTIVITY_COLOR[c.receptivity || "unknown"]} onClick={() => cycleReceptivity(c)} />
+                  <span style={{ color: "#64748b", fontSize: 11, marginLeft: "auto" }}>{ds == null ? "no activity" : `${ds}d since last`}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderContactCard = (c) => {
+    const stage = c.relationship_stage || "cold";
+    const ds = trkDaysSince(c.last_activity_date);
+    const overdue = c.next_followup_date && c.next_followup_date < trkToday();
+    return (
+      <div key={c.id} style={{ ...cardStyle, padding: 14, marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 14 }}>{c.contact_name || "(no name)"}</span>
+          <span style={{ color: "#94a3b8", fontSize: 12 }}>{c.agency_name}</span>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+          <TrkBadge text={trkPretty(c.contact_type || "support_coordination")} color="#0ea5e9" />
+          <TrkBadge text={stage} color={TRK_STAGE_COLOR[stage]} onClick={() => cycleContactStage(c)} />
+          <TrkBadge text={c.receptivity || "unknown"} color={TRK_RECEPTIVITY_COLOR[c.receptivity || "unknown"]} onClick={() => cycleReceptivity(c)} />
+          <TrkBadge text={trkPretty(c.contact_role || "unknown")} color={TRK_ROLE_COLOR[c.contact_role || "unknown"]} onClick={() => cycleRole(c)} star={c.contact_role === "champion"} />
+        </div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10, fontSize: 11, color: "#64748b" }}>
+          <span style={{ color: "#0ea5e9", fontWeight: 700 }}>⚡ {c.lead_score || 0} pts</span>
+          <span>{ds == null ? "no activity" : `${ds}d since last`}</span>
+          <span style={{ color: overdue ? "#ef4444" : "#64748b", fontWeight: overdue ? 700 : 400 }}>
+            {c.next_followup_date ? `follow-up ${c.next_followup_date}${overdue ? " (overdue)" : ""}` : "no follow-up set"}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPipeline = () => (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button onClick={() => setPipelineMode("org")} style={pillToggle(pipelineMode === "org")}>By Organization</button>
+        <button onClick={() => setPipelineMode("contact")} style={pillToggle(pipelineMode === "contact")}>By Contact</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+        {TRK_STAGE_CYCLE.map((stage) => {
+          const items = pipelineMode === "org"
+            ? organizations.filter((o) => (o.relationship_stage || "cold") === stage)
+            : contacts.filter((c) => (c.relationship_stage || "cold") === stage);
+          return (
+            <div key={stage} style={{ background: "#0f172a", borderRadius: 12, padding: 12, minHeight: 120 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 99, background: TRK_STAGE_COLOR[stage] }} />
+                <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 700, textTransform: "capitalize" }}>{stage}</span>
+                <span style={{ color: "#64748b", fontSize: 12, marginLeft: "auto" }}>{items.length}</span>
+              </div>
+              {items.length === 0
+                ? <p style={{ color: "#475569", fontSize: 12, textAlign: "center", padding: "20px 0" }}>Empty</p>
+                : items.map((it) => (pipelineMode === "org" ? renderOrgCard(it) : renderContactCard(it)))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  const renderActivityLog = () => {
+    const filtered = activities.filter((a) => {
+      if (filterType !== "all" && a.activity_type !== filterType) return false;
+      if (filterFrom && a.activity_date < filterFrom) return false;
+      if (filterTo && a.activity_date > filterTo) return false;
+      if (orgSearch) {
+        const org = organizations.find((o) => o.id === a.organization_id);
+        const contact = contacts.find((c) => c.id === a.contact_id);
+        const hay = `${org?.name || ""} ${contact?.contact_name || ""} ${contact?.agency_name || ""}`.toLowerCase();
+        if (!hay.includes(orgSearch.toLowerCase())) return false;
+      }
+      return true;
+    });
+    return (
+      <div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <select value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ ...inputStyle, width: "auto", cursor: "pointer" }}>
+            <option value="all">All types</option>
+            {TRK_ACTIVITY_TYPES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+          </select>
+          <input type="date" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} style={{ ...inputStyle, width: "auto" }} />
+          <input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} style={{ ...inputStyle, width: "auto" }} />
+          <input placeholder="Search org/contact..." value={orgSearch} onChange={(e) => setOrgSearch(e.target.value)} style={{ ...inputStyle, width: 220 }} />
+          <button onClick={() => setShowLogModal(true)} style={{ ...btnPrimary, marginLeft: "auto" }}>+ Log Activity</button>
+        </div>
+        {filtered.length === 0 ? (
+          <div style={{ ...cardStyle, textAlign: "center", padding: 40, color: "#64748b" }}>No activities logged yet.</div>
+        ) : filtered.map((a) => {
+          const org = organizations.find((o) => o.id === a.organization_id);
+          const contact = contacts.find((c) => c.id === a.contact_id);
+          return (
+            <div key={a.id} style={{ ...cardStyle, padding: "12px 16px", marginBottom: 8, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ color: "#64748b", fontSize: 12, minWidth: 92 }}>{a.activity_date}</span>
+              <span style={{ fontSize: 16 }}>{TRK_ACTIVITY_ICON[a.activity_type] || "•"}</span>
+              <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, minWidth: 160 }}>{org?.name || contact?.agency_name || contact?.contact_name || "—"}</span>
+              <span style={{ color: "#94a3b8", fontSize: 12 }}>{TRK_ACTIVITY_LABEL[a.activity_type] || a.activity_type}</span>
+              {a.outcome && <TrkBadge text={trkPretty(a.outcome)} color={a.outcome === "referral_received" ? "#22c55e" : "#94a3b8"} />}
+              <span style={{ color: "#0ea5e9", fontSize: 11, fontWeight: 700 }}>+{a.points_awarded || 0}</span>
+              {a.notes && <span style={{ color: "#475569", fontSize: 12, marginLeft: "auto", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.notes}</span>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderFollowups = () => {
+    const open = tasks.filter((t) => !t.completed);
+    return (
+      <div>
+        <div style={{ display: "flex", marginBottom: 16 }}>
+          <button onClick={() => setShowTaskModal(true)} style={{ ...btnPrimary, marginLeft: "auto" }}>+ Add Task</button>
+        </div>
+        {open.length === 0 ? (
+          <div style={{ ...cardStyle, textAlign: "center", padding: 40, color: "#64748b" }}>No open follow-up tasks.</div>
+        ) : open.map((t) => {
+          const contact = contacts.find((c) => c.id === t.contact_id);
+          const overdue = t.due_date < trkToday();
+          const dueToday = t.due_date === trkToday();
+          const rowColor = overdue ? "#ef444433" : dueToday ? "#f59e0b33" : "#1e293b";
+          const accent = overdue ? "#ef4444" : dueToday ? "#f59e0b" : "#64748b";
+          return (
+            <div key={t.id} style={{ ...cardStyle, padding: "12px 16px", marginBottom: 8, borderColor: rowColor }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span style={{ color: accent, fontSize: 12, fontWeight: 700, minWidth: 92 }}>{t.due_date}</span>
+                <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, minWidth: 160 }}>{contact ? contactLabel(contact) : "—"}</span>
+                <TrkBadge text={trkPretty(t.task_type)} color="#6366f1" />
+                <TrkBadge text={t.priority || "normal"} color={t.priority === "high" ? "#ef4444" : t.priority === "low" ? "#64748b" : "#94a3b8"} />
+                {t.notes && <span style={{ color: "#475569", fontSize: 12 }}>{t.notes}</span>}
+                {completingTask === t.id ? (
+                  <div style={{ display: "flex", gap: 6, marginLeft: "auto", alignItems: "center" }}>
+                    <select value={completingOutcome} onChange={(e) => setCompletingOutcome(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 10px" }}>
+                      <option value="">outcome…</option>
+                      {TRK_OUTCOMES.filter(Boolean).map((o) => <option key={o} value={o}>{trkPretty(o)}</option>)}
+                    </select>
+                    <button onClick={() => completeTask(t)} style={{ ...btnPrimary, padding: "6px 12px", fontSize: 12 }}>Confirm</button>
+                    <button onClick={() => { setCompletingTask(null); setCompletingOutcome(""); }} style={{ ...btnSecondary, padding: "6px 12px", fontSize: 12 }}>✕</button>
+                  </div>
+                ) : (
+                  <button onClick={() => { setCompletingTask(t.id); setCompletingOutcome(""); }} style={{ ...btnSecondary, marginLeft: "auto", padding: "6px 14px", fontSize: 12 }}>Done</button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const contactOptions = (search) => contacts.filter((c) => {
+    if (!search) return true;
+    return `${c.contact_name || ""} ${c.agency_name || ""}`.toLowerCase().includes(search.toLowerCase());
+  });
+
+  const modalShell = (title, body, onClose) => (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(2,6,23,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, maxWidth: 560, width: "100%", maxHeight: "88vh", overflow: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <h3 style={{ color: "#f1f5f9", fontSize: 17, margin: 0 }}>{title}</h3>
+          <button onClick={onClose} style={{ ...btnSecondary, padding: "4px 10px", fontSize: 12 }}>✕</button>
+        </div>
+        {body}
+      </div>
+    </div>
+  );
+
+  const fieldLabel = (t) => <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>{t}</label>;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <h2 style={{ color: "#f1f5f9", fontSize: 20, margin: 0 }}>Tracker</h2>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => setSubView("pipeline")} style={pillToggle(subView === "pipeline")}>Pipeline</button>
+          <button onClick={() => setSubView("activity")} style={pillToggle(subView === "activity")}>Activity Log</button>
+          <button onClick={() => setSubView("followup")} style={pillToggle(subView === "followup")}>Follow-up Queue</button>
+        </div>
+      </div>
+
+      {renderStatsBar()}
+
+      {loading ? (
+        <div style={{ textAlign: "center", padding: 60, color: "#64748b" }}>Loading tracker…</div>
+      ) : (
+        <>
+          {subView === "pipeline" && renderPipeline()}
+          {subView === "activity" && renderActivityLog()}
+          {subView === "followup" && renderFollowups()}
+        </>
+      )}
+
+      {showLogModal && modalShell("Log Activity", (
+        <div>
+          <div style={{ marginBottom: 12 }}>
+            {fieldLabel("Contact")}
+            <input placeholder="Search contacts…" value={logSearch} onChange={(e) => setLogSearch(e.target.value)} style={{ ...inputStyle, marginBottom: 6 }} />
+            <select value={logForm.contact_id} onChange={(e) => setLogForm({ ...logForm, contact_id: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
+              <option value="">Select contact…</option>
+              {contactOptions(logSearch).map((c) => <option key={c.id} value={c.id}>{contactLabel(c)}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              {fieldLabel("Activity Type")}
+              <select value={logForm.activity_type} onChange={(e) => setLogForm({ ...logForm, activity_type: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
+                {TRK_ACTIVITY_TYPES.map((a) => <option key={a.value} value={a.value}>{a.label} (+{a.points})</option>)}
+              </select>
+            </div>
+            <div>
+              {fieldLabel("Date")}
+              <input type="date" value={logForm.activity_date} onChange={(e) => setLogForm({ ...logForm, activity_date: e.target.value })} style={inputStyle} />
+            </div>
+          </div>
+          {logForm.activity_type === "in_person_visit" && (
+            <div style={{ marginBottom: 12 }}>
+              {fieldLabel("Location")}
+              <input value={logForm.location} onChange={(e) => setLogForm({ ...logForm, location: e.target.value })} style={inputStyle} placeholder="Where did the visit happen?" />
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              {fieldLabel("Person Met")}
+              <input value={logForm.person_met} onChange={(e) => setLogForm({ ...logForm, person_met: e.target.value })} style={inputStyle} />
+            </div>
+            <div>
+              {fieldLabel("Outcome")}
+              <select value={logForm.outcome} onChange={(e) => setLogForm({ ...logForm, outcome: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
+                <option value="">—</option>
+                {TRK_OUTCOMES.filter(Boolean).map((o) => <option key={o} value={o}>{trkPretty(o)}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            {fieldLabel("Notes")}
+            <textarea value={logForm.notes} onChange={(e) => setLogForm({ ...logForm, notes: e.target.value })} rows={3} style={{ ...inputStyle, resize: "vertical" }} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={saveActivity} style={btnPrimary}>Save Activity</button>
+            <button onClick={() => { setShowLogModal(false); setLogForm(emptyLog); setLogSearch(""); }} style={btnSecondary}>Cancel</button>
+          </div>
+        </div>
+      ), () => { setShowLogModal(false); setLogForm(emptyLog); setLogSearch(""); })}
+
+      {showTaskModal && modalShell("Add Follow-up Task", (
+        <div>
+          <div style={{ marginBottom: 12 }}>
+            {fieldLabel("Contact")}
+            <input placeholder="Search contacts…" value={taskSearch} onChange={(e) => setTaskSearch(e.target.value)} style={{ ...inputStyle, marginBottom: 6 }} />
+            <select value={taskForm.contact_id} onChange={(e) => setTaskForm({ ...taskForm, contact_id: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
+              <option value="">Select contact…</option>
+              {contactOptions(taskSearch).map((c) => <option key={c.id} value={c.id}>{contactLabel(c)}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+            <div>
+              {fieldLabel("Task Type")}
+              <select value={taskForm.task_type} onChange={(e) => setTaskForm({ ...taskForm, task_type: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
+                {TRK_TASK_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+            <div>
+              {fieldLabel("Due Date")}
+              <input type="date" value={taskForm.due_date} onChange={(e) => setTaskForm({ ...taskForm, due_date: e.target.value })} style={inputStyle} />
+            </div>
+            <div>
+              {fieldLabel("Priority")}
+              <select value={taskForm.priority} onChange={(e) => setTaskForm({ ...taskForm, priority: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
+                <option value="low">Low</option>
+                <option value="normal">Normal</option>
+                <option value="high">High</option>
+              </select>
+            </div>
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            {fieldLabel("Notes")}
+            <textarea value={taskForm.notes} onChange={(e) => setTaskForm({ ...taskForm, notes: e.target.value })} rows={3} style={{ ...inputStyle, resize: "vertical" }} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={saveTask} style={btnPrimary}>Save Task</button>
+            <button onClick={() => { setShowTaskModal(false); setTaskForm(emptyTask); setTaskSearch(""); }} style={btnSecondary}>Cancel</button>
+          </div>
+        </div>
+      ), () => { setShowTaskModal(false); setTaskForm(emptyTask); setTaskSearch(""); })}
+    </div>
+  );
+}
+
 // ── Main App ──
 const TABS = [
   { id: "contacts", label: "Contacts", icon: "👥" },
   { id: "templates", label: "Templates", icon: "📝" },
   { id: "campaigns", label: "Campaigns", icon: "🚀" },
   { id: "sequences", label: "Sequences", icon: "🔁" },
+  { id: "tracker", label: "Tracker", icon: "🎯" },
   { id: "sent", label: "Sent Log", icon: "📬" },
   { id: "setup", label: "DB Setup", icon: "⚙️" },
 ];
@@ -1383,6 +2012,7 @@ export default function App() {
         {activeTab === "templates" && <TemplatesTab supabase={supabase} />}
         {activeTab === "campaigns" && <CampaignsTab supabase={supabase} config={config} />}
         {activeTab === "sequences" && <SequencesTab supabase={supabase} />}
+        {activeTab === "tracker" && <TrackerTab supabase={supabase} />}
         {activeTab === "sent" && <SentTab supabase={supabase} />}
         {activeTab === "setup" && <SetupTab />}
       </div>
