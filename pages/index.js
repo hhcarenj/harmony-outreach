@@ -6,6 +6,7 @@ import {
   TOTAL_STEPS,
   sendDateForStep,
   todayISO,
+  renderStep,
 } from "../lib/sequenceEmails";
 
 // ── Shared Styles ──
@@ -138,9 +139,37 @@ function stepStatus(seq, step) {
 
 function SequenceModal({ supabase, seq, onClose, onChange }) {
   const [busy, setBusy] = useState(false);
+  const [overrides, setOverrides] = useState({}); // step_number -> { subject, body }
+  const [previewStep, setPreviewStep] = useState(null);
+  const [editStep, setEditStep] = useState(null);
+  const [editSubject, setEditSubject] = useState("");
+  const [editBody, setEditBody] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  const loadOverrides = useCallback(async () => {
+    if (!seq?.contact_id) { setOverrides({}); return; }
+    const { data } = await supabase
+      .from("sequence_email_overrides")
+      .select("step_number, custom_subject, custom_body")
+      .eq("contact_id", seq.contact_id)
+      .eq("sequence_type", seq.sequence_type);
+    const m = {};
+    (data || []).forEach((r) => { m[r.step_number] = { subject: r.custom_subject, body: r.custom_body }; });
+    setOverrides(m);
+  }, [supabase, seq?.contact_id, seq?.sequence_type]);
+
+  useEffect(() => { loadOverrides(); }, [loadOverrides]);
+
   if (!seq) return null;
   const subjects = STEP_SUBJECTS[seq.sequence_type] || [];
   const statusColors = { sent: "#10b981", pending: "#3b82f6", skipped: "#64748b" };
+
+  // Resolved (override-aware) rendered email for a given step — merge tags filled in.
+  const resolvedStep = (step) => {
+    const ov = overrides[step];
+    if (ov) return { subject: ov.subject || "", body: ov.body || "" };
+    return renderStep(seq, step) || { subject: "", body: "" };
+  };
 
   const apply = async (update) => {
     setBusy(true);
@@ -150,9 +179,33 @@ function SequenceModal({ supabase, seq, onClose, onChange }) {
     onClose();
   };
 
+  const openEdit = (step) => {
+    const r = resolvedStep(step);
+    setEditStep(step);
+    setEditSubject(r.subject);
+    setEditBody(r.body);
+  };
+
+  const saveEdit = async () => {
+    setSavingEdit(true);
+    await supabase.from("sequence_email_overrides").upsert(
+      {
+        contact_id: seq.contact_id,
+        sequence_type: seq.sequence_type,
+        step_number: editStep,
+        custom_subject: editSubject,
+        custom_body: editBody,
+      },
+      { onConflict: "contact_id,sequence_type,step_number" }
+    );
+    await loadOverrides();
+    setSavingEdit(false);
+    setEditStep(null);
+  };
+
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(2,6,23,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, maxWidth: 620, width: "100%", maxHeight: "85vh", overflow: "auto" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, maxWidth: 640, width: "100%", maxHeight: "85vh", overflow: "auto" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
           <div>
             <h3 style={{ color: "#f1f5f9", fontSize: 18, margin: 0 }}>
@@ -174,14 +227,20 @@ function SequenceModal({ supabase, seq, onClose, onChange }) {
             const step = i + 1;
             const st = stepStatus(seq, step);
             const date = sendDateForStep(seq.sequence_type, seq.visit_date, step);
+            const edited = !!overrides[step];
+            const shownSubject = edited ? overrides[step].subject : subj;
             return (
-              <div key={step} style={{ display: "flex", gap: 12, alignItems: "center", padding: "10px 0", borderBottom: "1px solid #1e293b" }}>
+              <div key={step} style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 0", borderBottom: "1px solid #1e293b", flexWrap: "wrap" }}>
                 <div style={{ width: 22, height: 22, borderRadius: 99, background: "#0f172a", color: "#94a3b8", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{step}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{subj}</div>
+                <div style={{ flex: 1, minWidth: 140 }}>
+                  <div style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {shownSubject}{edited && <span style={{ color: "#a78bfa", fontSize: 10, fontWeight: 700, marginLeft: 6 }}>✎ EDITED</span>}
+                  </div>
                   <div style={{ color: "#64748b", fontSize: 11, marginTop: 2 }}>Send date: {date}</div>
                 </div>
                 <span style={{ padding: "2px 9px", borderRadius: 99, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, background: statusColors[st] + "22", color: statusColors[st], flexShrink: 0 }}>{st}</span>
+                <button onClick={() => setPreviewStep(step)} style={{ ...btnSecondary, padding: "4px 10px", fontSize: 11 }}>👁 Preview</button>
+                <button onClick={() => openEdit(step)} style={{ ...btnSecondary, padding: "4px 10px", fontSize: 11 }}>✎ Edit</button>
               </div>
             );
           })}
@@ -206,6 +265,47 @@ function SequenceModal({ supabase, seq, onClose, onChange }) {
             </>
           )}
         </div>
+
+        {/* Fix 4 — read-only email preview */}
+        {previewStep !== null && (() => {
+          const r = resolvedStep(previewStep);
+          return (
+            <div onClick={() => setPreviewStep(null)} style={{ position: "fixed", inset: 0, background: "rgba(2,6,23,0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1200, padding: 20 }}>
+              <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, maxWidth: 600, width: "100%", maxHeight: "85vh", overflow: "auto" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <h3 style={{ color: "#f1f5f9", fontSize: 16, margin: 0 }}>Preview — Step {previewStep} {overrides[previewStep] ? "(custom)" : ""}</h3>
+                  <button onClick={() => setPreviewStep(null)} style={{ ...btnSecondary, padding: "4px 10px", fontSize: 12 }}>✕</button>
+                </div>
+                <p style={{ color: "#64748b", fontSize: 12, marginBottom: 4 }}>To: <span style={{ color: "#7dd3fc" }}>{seq.contact_email || "—"}</span></p>
+                <p style={{ color: "#64748b", fontSize: 12, marginBottom: 12 }}>Subject: <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{r.subject}</span></p>
+                <div style={{ background: "#0f172a", borderRadius: 8, padding: 16 }}>
+                  <pre style={{ color: "#cbd5e1", fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0 }}>{r.body}</pre>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Fix 5 — per-contact email editor */}
+        {editStep !== null && (
+          <div onClick={() => setEditStep(null)} style={{ position: "fixed", inset: 0, background: "rgba(2,6,23,0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1200, padding: 20 }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, maxWidth: 640, width: "100%", maxHeight: "88vh", overflow: "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <h3 style={{ color: "#f1f5f9", fontSize: 16, margin: 0 }}>Edit Step {editStep} — {seq.contact_name || seq.agency_name}</h3>
+                <button onClick={() => setEditStep(null)} style={{ ...btnSecondary, padding: "4px 10px", fontSize: 12 }}>✕</button>
+              </div>
+              <p style={{ color: "#475569", fontSize: 11, marginBottom: 12 }}>This override applies only to this contact's sequence. Leave merge tags like {"{{first_name}}"} in place to keep them dynamic.</p>
+              <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>Subject</label>
+              <input value={editSubject} onChange={(e) => setEditSubject(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
+              <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>Body</label>
+              <textarea value={editBody} onChange={(e) => setEditBody(e.target.value)} rows={16} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.6, marginBottom: 14 }} />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button disabled={savingEdit} onClick={saveEdit} style={btnPrimary}>{savingEdit ? "Saving…" : "Save Override"}</button>
+                <button onClick={() => setEditStep(null)} style={btnSecondary}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1188,6 +1288,21 @@ function SequencesTab({ supabase }) {
   const [runResult, setRunResult] = useState(null);
   const [modalSeq, setModalSeq] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [bannerHidden, setBannerHidden] = useState(false);
+
+  // Fix 6 — restore the banner's hidden preference from localStorage.
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage.getItem("seq_banner_hidden") === "1") {
+        setBannerHidden(true);
+      }
+    } catch (e) { /* localStorage unavailable — show banner */ }
+  }, []);
+
+  const hideBanner = () => {
+    setBannerHidden(true);
+    try { window.localStorage.setItem("seq_banner_hidden", "1"); } catch (e) { /* ignore */ }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1242,17 +1357,50 @@ function SequencesTab({ supabase }) {
         </div>
       </div>
 
+      {!bannerHidden && (
+        <div style={{ background: "#0f172a", borderLeft: "4px solid #6366f1", borderRadius: 8, padding: "16px 18px", marginBottom: 16, position: "relative" }}>
+          <button onClick={hideBanner} title="Hide" style={{ position: "absolute", top: 10, right: 12, background: "none", border: "none", color: "#64748b", fontSize: 16, cursor: "pointer" }}>✕</button>
+          <h3 style={{ color: "#f1f5f9", fontSize: 15, margin: "0 0 10px", fontWeight: 700 }}>Two sequences, one goal — referrals</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div>
+              <p style={{ color: "#a78bfa", fontSize: 13, fontWeight: 700, margin: "0 0 4px" }}>Sequence A — Post In-Person Visit</p>
+              <p style={{ color: "#94a3b8", fontSize: 12, lineHeight: 1.6, margin: 0 }}>
+                Triggered when you log an in-person visit for a contact. 5 emails over 21 days. Tone is warm and personal — references the visit, builds on the relationship you already started in person.
+                <br /><span style={{ color: "#64748b" }}>Steps: Day 0, Day 3, Day 7, Day 14, Day 21.</span>
+              </p>
+            </div>
+            <div>
+              <p style={{ color: "#7dd3fc", fontSize: 13, fontWeight: 700, margin: "0 0 4px" }}>Sequence B — Cold Outreach</p>
+              <p style={{ color: "#94a3b8", fontSize: 12, lineHeight: 1.6, margin: 0 }}>
+                Triggered automatically when a new contact is added with no in-person visit. 5 emails over 23 days. Tone is professional and credibility-first — introduces Harmony from scratch to someone who has never met you.
+                <br /><span style={{ color: "#64748b" }}>Steps: Day 0, Day 4, Day 9, Day 16, Day 23.</span>
+              </p>
+            </div>
+          </div>
+          <p style={{ color: "#64748b", fontSize: 11, margin: "12px 0 0", lineHeight: 1.5 }}>
+            <strong style={{ color: "#94a3b8" }}>Exit conditions for both:</strong> contact replies (mark as replied), contact is converted (status = converted auto-stops), contact unsubscribes (mark unsubscribed).
+          </p>
+        </div>
+      )}
+
       <p style={{ color: "#475569", fontSize: 12, marginBottom: 16 }}>
         “Run sequence check” triggers the daily runner now — it sends every step whose send date is due today. The same job runs automatically each morning via Vercel Cron.
       </p>
 
-      {runResult && (
-        <div style={{ ...cardStyle, marginBottom: 20, borderColor: runResult.error ? "#f8717155" : "#6366f155" }}>
+      {runResult && (() => {
+        const failed = (runResult.results || []).filter((r) => r.status === "failed" || r.status === "error");
+        return (
+        <div style={{ ...cardStyle, marginBottom: 20, borderColor: (runResult.error || failed.length > 0) ? "#f8717155" : "#6366f155" }}>
           {runResult.error ? (
-            <p style={{ color: "#f87171", fontSize: 13, margin: 0 }}>Error: {runResult.error}</p>
+            <p style={{ color: "#f87171", fontSize: 13, margin: 0 }}>⚠️ Error: {runResult.error}</p>
           ) : (
             <>
               <p style={{ color: "#e2e8f0", fontSize: 14, fontWeight: 600, margin: "0 0 8px" }}>{runResult.message}</p>
+              {failed.length > 0 && (
+                <p style={{ color: "#f87171", fontSize: 13, fontWeight: 600, margin: "0 0 8px", padding: "8px 10px", background: "#f8717111", borderRadius: 6 }}>
+                  ⚠️ {failed.length} send{failed.length > 1 ? "s" : ""} failed — {failed[0].error || "see details below"} (check RESEND_API_KEY and that the domain is verified in Resend)
+                </p>
+              )}
               {(runResult.results || []).length > 0 && (
                 <div style={{ maxHeight: 200, overflow: "auto" }}>
                   {runResult.results.map((r, i) => (
@@ -1269,7 +1417,8 @@ function SequencesTab({ supabase }) {
             </>
           )}
         </div>
-      )}
+        );
+      })()}
 
       {loading ? (
         <div style={{ textAlign: "center", padding: 60, color: "#64748b" }}>Loading sequences...</div>
@@ -1429,6 +1578,8 @@ function TrackerTab({ supabase }) {
   const [activities, setActivities] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [expandedOrgs, setExpandedOrgs] = useState(new Set());
+  const [confirmDelete, setConfirmDelete] = useState(null); // activity id pending delete confirm
+  const [expandedNotes, setExpandedNotes] = useState(new Set());
 
   // Activity log filters + modal
   const [filterType, setFilterType] = useState("all");
@@ -1719,6 +1870,26 @@ function TrackerTab({ supabase }) {
     </div>
   );
 
+  const toggleNote = (id) => setExpandedNotes((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  // Fix 1 + Fix 3 — delete an activity, reverse its awarded points, update totals optimistically.
+  const deleteActivity = async (a) => {
+    const pts = a.points_awarded || 0;
+    const contact = contacts.find((c) => c.id === a.contact_id);
+    const org = a.organization_id ? organizations.find((o) => o.id === a.organization_id) : null;
+
+    // Optimistic UI — totalPoints is derived from contacts.lead_score, so this updates the stats bar instantly.
+    setActivities((prev) => prev.filter((x) => x.id !== a.id));
+    if (contact) setContacts((prev) => prev.map((c) => (c.id === contact.id ? { ...c, lead_score: Math.max(0, (c.lead_score || 0) - pts) } : c)));
+    if (org) setOrganizations((prev) => prev.map((o) => (o.id === org.id ? { ...o, lead_score: Math.max(0, (o.lead_score || 0) - pts) } : o)));
+    setConfirmDelete(null);
+
+    // Persist
+    await supabase.from("outreach_activities").delete().eq("id", a.id);
+    if (contact) await supabase.from("sc_contacts").update({ lead_score: Math.max(0, (contact.lead_score || 0) - pts) }).eq("id", contact.id);
+    if (org) await supabase.from("organizations").update({ lead_score: Math.max(0, (org.lead_score || 0) - pts) }).eq("id", org.id);
+  };
+
   const renderActivityLog = () => {
     const filtered = activities.filter((a) => {
       if (filterType !== "all" && a.activity_type !== filterType) return false;
@@ -1749,15 +1920,39 @@ function TrackerTab({ supabase }) {
         ) : filtered.map((a) => {
           const org = organizations.find((o) => o.id === a.organization_id);
           const contact = contacts.find((c) => c.id === a.contact_id);
+          const noteOpen = expandedNotes.has(a.id);
+          const longNote = (a.notes || "").length > 60;
           return (
-            <div key={a.id} style={{ ...cardStyle, padding: "12px 16px", marginBottom: 8, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-              <span style={{ color: "#64748b", fontSize: 12, minWidth: 92 }}>{a.activity_date}</span>
-              <span style={{ fontSize: 16 }}>{TRK_ACTIVITY_ICON[a.activity_type] || "•"}</span>
-              <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, minWidth: 160 }}>{org?.name || contact?.agency_name || contact?.contact_name || "—"}</span>
-              <span style={{ color: "#94a3b8", fontSize: 12 }}>{TRK_ACTIVITY_LABEL[a.activity_type] || a.activity_type}</span>
-              {a.outcome && <TrkBadge text={trkPretty(a.outcome)} color={a.outcome === "referral_received" ? "#22c55e" : "#94a3b8"} />}
-              <span style={{ color: "#0ea5e9", fontSize: 11, fontWeight: 700 }}>+{a.points_awarded || 0}</span>
-              {a.notes && <span style={{ color: "#475569", fontSize: 12, marginLeft: "auto", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.notes}</span>}
+            <div key={a.id} style={{ ...cardStyle, padding: "12px 16px", marginBottom: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span style={{ color: "#64748b", fontSize: 12, minWidth: 92 }}>{a.activity_date}</span>
+                <span style={{ fontSize: 16 }}>{TRK_ACTIVITY_ICON[a.activity_type] || "•"}</span>
+                <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, minWidth: 160 }}>{org?.name || contact?.agency_name || contact?.contact_name || "—"}</span>
+                <span style={{ color: "#94a3b8", fontSize: 12 }}>{TRK_ACTIVITY_LABEL[a.activity_type] || a.activity_type}</span>
+                {a.outcome && <TrkBadge text={trkPretty(a.outcome)} color={a.outcome === "referral_received" ? "#22c55e" : "#94a3b8"} />}
+                <span style={{ color: "#0ea5e9", fontSize: 11, fontWeight: 700 }}>+{a.points_awarded || 0}</span>
+                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                  {confirmDelete === a.id ? (
+                    <>
+                      <span style={{ color: "#f87171", fontSize: 12 }}>Delete this activity?</span>
+                      <button onClick={() => deleteActivity(a)} style={{ ...btnSecondary, color: "#f87171", borderColor: "#f8717133", padding: "4px 10px", fontSize: 11 }}>Confirm</button>
+                      <button onClick={() => setConfirmDelete(null)} style={{ ...btnSecondary, padding: "4px 10px", fontSize: 11 }}>Cancel</button>
+                    </>
+                  ) : (
+                    <button onClick={() => setConfirmDelete(a.id)} title="Delete activity" style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 13, padding: "4px 9px", cursor: "pointer" }}>🗑</button>
+                  )}
+                </div>
+              </div>
+              {a.notes && (
+                <div style={{ color: "#64748b", fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>
+                  {(!longNote || noteOpen) ? a.notes : `${a.notes.slice(0, 60)}… `}
+                  {longNote && (
+                    <span onClick={() => toggleNote(a.id)} style={{ color: "#6366f1", cursor: "pointer", fontWeight: 600, marginLeft: 4 }}>
+                      {noteOpen ? "Show less" : "Show more"}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
