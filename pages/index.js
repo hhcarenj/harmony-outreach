@@ -458,6 +458,7 @@ function ContactsTab({ supabase }) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
+  const [visibleCount, setVisibleCount] = useState(150);
   const [showAdd, setShowAdd] = useState(false);
   const [newContact, setNewContact] = useState({ agency_name: "", contact_name: "", email: "", phone: "", counties_served: "" });
   const [importText, setImportText] = useState("");
@@ -477,12 +478,27 @@ function ContactsTab({ supabase }) {
     setLoadError(null);
     // FIX: Use official @supabase/supabase-js client — handles auth headers,
     // URL encoding, and RLS correctly without manual fetch() calls.
-    const { data, error } = await supabase.from("sc_contacts").select("*");
-    if (error) {
-      setLoadError(typeof error === "object" ? error.message || JSON.stringify(error) : String(error));
+    // Page through in chunks of 1000 to bypass Supabase's default row cap,
+    // so the table always reflects every contact regardless of total count.
+    const pageSize = 1000;
+    let all = [];
+    let from = 0;
+    let pageError = null;
+    while (true) {
+      const { data, error } = await supabase
+        .from("sc_contacts")
+        .select("*")
+        .range(from, from + pageSize - 1);
+      if (error) { pageError = error; break; }
+      all = all.concat(data || []);
+      if (!data || data.length < pageSize) break;
+      from += pageSize;
+    }
+    if (pageError) {
+      setLoadError(typeof pageError === "object" ? pageError.message || JSON.stringify(pageError) : String(pageError));
       setContacts([]);
     } else {
-      setContacts(data || []);
+      setContacts(all);
     }
     setLoading(false);
   }, [supabase]);
@@ -601,11 +617,24 @@ function ContactsTab({ supabase }) {
     load();
   };
 
+  const REGIONS = {
+    south: ["atlantic", "burlington", "camden", "cape may", "cumberland", "gloucester", "salem"],
+    central: ["hunterdon", "mercer", "middlesex", "monmouth", "ocean", "somerset", "union"],
+    north: ["bergen", "essex", "hudson", "morris", "passaic", "sussex", "warren"],
+  };
+  const matchesRegion = (c, region) => {
+    const cs = (c.counties_served || "").toLowerCase();
+    return REGIONS[region].some(county => cs.includes(county));
+  };
+
   const filtered = contacts.filter(c => {
     const matchesSearch = !search || [c.agency_name, c.email, c.counties_served, c.contact_name]
       .some(f => (f || "").toLowerCase().includes(search.toLowerCase()));
     const matchesStatus = filterStatus === "all" ? true
       : filterStatus === "burlington" ? (c.counties_served || "").toLowerCase().includes("burlington")
+      : filterStatus === "south" ? matchesRegion(c, "south")
+      : filterStatus === "central" ? matchesRegion(c, "central")
+      : filterStatus === "north" ? matchesRegion(c, "north")
       : filterStatus === "has_email" ? !!c.email
       : c.status === filterStatus;
     return matchesSearch && matchesStatus;
@@ -653,6 +682,9 @@ function ContactsTab({ supabase }) {
             <option value="contacted">Contacted</option>
             <option value="replied">Replied</option>
             <option value="converted">Converted</option>
+            <option value="south">South Jersey</option>
+            <option value="central">Central Jersey</option>
+            <option value="north">North Jersey</option>
             <option value="burlington">Burlington County</option>
             <option value="has_email">Has Email</option>
           </select>
@@ -789,7 +821,7 @@ function ContactsTab({ supabase }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.slice(0, 150).map((c, i) => (
+              {filtered.slice(0, visibleCount).map((c, i) => (
                 <tr key={c.id || i} style={{ borderBottom: "1px solid #1e293b" }}>
                   <td style={{ padding: "12px 14px", color: "#e2e8f0", fontSize: 13, fontWeight: 600, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.agency_name}</td>
                   <td style={{ padding: "12px 14px", color: "#94a3b8", fontSize: 13 }}>{c.contact_name || "—"}</td>
@@ -844,8 +876,14 @@ function ContactsTab({ supabase }) {
               ))}
             </tbody>
           </table>
-          {filtered.length > 150 && (
-            <p style={{ color: "#64748b", fontSize: 12, textAlign: "center", marginTop: 12 }}>Showing first 150 of {filtered.length}</p>
+          {filtered.length > visibleCount && (
+            <div style={{ textAlign: "center", marginTop: 12 }}>
+              <p style={{ color: "#64748b", fontSize: 12, marginBottom: 8 }}>Showing {visibleCount} of {filtered.length}</p>
+              <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+                <button onClick={() => setVisibleCount(v => v + 150)} style={btnSecondary}>Show more</button>
+                <button onClick={() => setVisibleCount(filtered.length)} style={btnSecondary}>Show all ({filtered.length})</button>
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -1013,8 +1051,17 @@ function CampaignsTab({ supabase, config }) {
 
   useEffect(() => { load(); }, [load]);
 
+  const CAMPAIGN_REGIONS = {
+    south: ["atlantic", "burlington", "camden", "cape may", "cumberland", "gloucester", "salem"],
+    central: ["hunterdon", "mercer", "middlesex", "monmouth", "ocean", "somerset", "union"],
+    north: ["bergen", "essex", "hudson", "morris", "passaic", "sussex", "warren"],
+  };
   const filtered = contacts.filter(c => {
     if (filter === "burlington") return (c.counties_served || "").toLowerCase().includes("burlington");
+    if (filter === "south" || filter === "central" || filter === "north") {
+      const cs = (c.counties_served || "").toLowerCase();
+      return CAMPAIGN_REGIONS[filter].some(county => cs.includes(county));
+    }
     if (filter === "new") return c.status === "new";
     if (filter === "not_contacted") return c.status === "new" || c.status === null;
     return true;
@@ -1122,6 +1169,9 @@ function CampaignsTab({ supabase, config }) {
           <select value={filter} onChange={e => { setFilter(e.target.value); setSelectedContacts(new Set()); }} style={{ ...inputStyle, cursor: "pointer" }}>
             <option value="all">All with Email ({contacts.length})</option>
             <option value="new">New / Not Contacted</option>
+            <option value="south">South Jersey</option>
+            <option value="central">Central Jersey</option>
+            <option value="north">North Jersey</option>
             <option value="burlington">Burlington County</option>
           </select>
         </div>
@@ -1572,6 +1622,7 @@ function TrkBadge({ text, color, onClick, title, star }) {
 function TrackerTab({ supabase }) {
   const [subView, setSubView] = useState("pipeline");
   const [pipelineMode, setPipelineMode] = useState("org");
+  const [pipelineSearch, setPipelineSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [contacts, setContacts] = useState([]);
   const [organizations, setOrganizations] = useState([]);
@@ -1842,17 +1893,27 @@ function TrackerTab({ supabase }) {
     );
   };
 
-  const renderPipeline = () => (
+  const renderPipeline = () => {
+    const q = pipelineSearch.trim().toLowerCase();
+    const matchesSearch = (it) => !q || [it.agency_name, it.contact_name, it.name, it.email, it.counties_served]
+      .some((f) => (f || "").toLowerCase().includes(q));
+    return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <button onClick={() => setPipelineMode("org")} style={pillToggle(pipelineMode === "org")}>By Organization</button>
         <button onClick={() => setPipelineMode("contact")} style={pillToggle(pipelineMode === "contact")}>By Contact</button>
+        <input
+          placeholder="Search by name, email, county..."
+          value={pipelineSearch}
+          onChange={(e) => setPipelineSearch(e.target.value)}
+          style={{ ...inputStyle, width: 260, marginLeft: "auto" }}
+        />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
         {TRK_STAGE_CYCLE.map((stage) => {
-          const items = pipelineMode === "org"
+          const items = (pipelineMode === "org"
             ? organizations.filter((o) => (o.relationship_stage || "cold") === stage)
-            : contacts.filter((c) => (c.relationship_stage || "cold") === stage);
+            : contacts.filter((c) => (c.relationship_stage || "cold") === stage)).filter(matchesSearch);
           return (
             <div key={stage} style={{ background: "#0f172a", borderRadius: 12, padding: 12, minHeight: 120 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -1868,7 +1929,8 @@ function TrackerTab({ supabase }) {
         })}
       </div>
     </div>
-  );
+    );
+  };
 
   const toggleNote = (id) => setExpandedNotes((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
