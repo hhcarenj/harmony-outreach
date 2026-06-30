@@ -452,6 +452,21 @@ CREATE POLICY "anon_all_campaigns" ON campaigns FOR ALL USING (true) WITH CHECK 
   );
 }
 
+// ── Contact type config (shared: badge color, label, dropdown, filter) ──
+const CONTACT_TYPES = [
+  { value: "support_coordination", label: "Support Coordination", color: "#14b8a6" },
+  { value: "rehab_center", label: "Rehab Center", color: "#f97316" },
+  { value: "nursing_home", label: "Nursing Home", color: "#3b82f6" },
+  { value: "assisted_living", label: "Assisted Living", color: "#f59e0b" },
+  { value: "doctors_office", label: "Doctor's Office", color: "#8b5cf6" },
+  { value: "pediatric_practice", label: "Pediatric Practice", color: "#ec4899" },
+  { value: "adult_day_program", label: "Adult Day Program", color: "#22c55e" },
+  { value: "networking_contact", label: "Networking Contact", color: "#6b7280" },
+  { value: "insurance_company", label: "Insurance Company", color: "#0ea5e9" },
+];
+const CONTACT_TYPE_COLOR = Object.fromEntries(CONTACT_TYPES.map((t) => [t.value, t.color]));
+const CONTACT_TYPE_LABEL = Object.fromEntries(CONTACT_TYPES.map((t) => [t.value, t.label]));
+
 // ── Contacts Tab ──
 function ContactsTab({ supabase }) {
   const [contacts, setContacts] = useState([]);
@@ -578,6 +593,8 @@ function ContactsTab({ supabase }) {
       languages: contact.languages || "",
       status: contact.status || "new",
       notes: contact.notes || "",
+      contact_type: contact.contact_type || "support_coordination",
+      contact_type_confirmed: !!contact.contact_type_confirmed,
     });
     setShowAdd(false);
     setShowImport(false);
@@ -631,6 +648,7 @@ function ContactsTab({ supabase }) {
     const matchesSearch = !search || [c.agency_name, c.email, c.counties_served, c.contact_name]
       .some(f => (f || "").toLowerCase().includes(search.toLowerCase()));
     const matchesStatus = filterStatus === "all" ? true
+      : filterStatus.startsWith("type:") ? (c.contact_type || "") === filterStatus.slice(5)
       : filterStatus === "burlington" ? (c.counties_served || "").toLowerCase().includes("burlington")
       : filterStatus === "south" ? matchesRegion(c, "south")
       : filterStatus === "central" ? matchesRegion(c, "central")
@@ -687,6 +705,11 @@ function ContactsTab({ supabase }) {
             <option value="north">North Jersey</option>
             <option value="burlington">Burlington County</option>
             <option value="has_email">Has Email</option>
+            <optgroup label="Contact Type">
+              {CONTACT_TYPES.map(t => (
+                <option key={t.value} value={`type:${t.value}`}>{t.label}</option>
+              ))}
+            </optgroup>
           </select>
           <button onClick={() => setShowImport(!showImport)} style={btnSecondary}>📥 Bulk Import</button>
           <button onClick={() => setShowAdd(!showAdd)} style={btnPrimary}>+ Add Contact</button>
@@ -757,6 +780,25 @@ function ContactsTab({ supabase }) {
                 <option value="converted">Converted</option>
               </select>
             </div>
+            <div>
+              <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>Contact Type</label>
+              <select
+                value={editForm.contact_type || "support_coordination"}
+                onChange={e => setEditForm({ ...editForm, contact_type: e.target.value, contact_type_confirmed: true })}
+                style={{ ...inputStyle, cursor: "pointer" }}
+              >
+                {CONTACT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, color: "#94a3b8", fontSize: 12, marginTop: 6, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={!!editForm.contact_type_confirmed}
+                  onChange={e => setEditForm({ ...editForm, contact_type_confirmed: e.target.checked })}
+                  style={{ accentColor: "#ec4899" }}
+                />
+                <span>Type confirmed</span>
+              </label>
+            </div>
           </div>
           <div style={{ marginBottom: 12 }}>
             <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>Notes</label>
@@ -815,7 +857,7 @@ function ContactsTab({ supabase }) {
           <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
             <thead>
               <tr>
-                {["Agency", "Contact", "Email", "Phone", "Counties", "Status", "Sequence", ""].map(h => (
+                {["Agency", "Contact", "Email", "Phone", "Counties", "Type", "Status", "Sequence", ""].map(h => (
                   <th key={h} style={{ textAlign: "left", padding: "10px 14px", color: "#64748b", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
@@ -828,6 +870,18 @@ function ContactsTab({ supabase }) {
                   <td style={{ padding: "12px 14px", color: "#7dd3fc", fontSize: 13, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>{c.email || "—"}</td>
                   <td style={{ padding: "12px 14px", color: "#94a3b8", fontSize: 13, whiteSpace: "nowrap" }}>{c.phone || "—"}</td>
                   <td style={{ padding: "12px 14px", color: "#94a3b8", fontSize: 12, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.counties_served || "—"}</td>
+                  <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
+                    {c.contact_type ? (
+                      <span style={{
+                        display: "inline-block", padding: "3px 10px", borderRadius: 99, fontSize: 11, fontWeight: 700,
+                        background: (CONTACT_TYPE_COLOR[c.contact_type] || "#6b7280") + "22",
+                        color: CONTACT_TYPE_COLOR[c.contact_type] || "#6b7280",
+                        border: `1px solid ${(CONTACT_TYPE_COLOR[c.contact_type] || "#6b7280")}33`,
+                      }}>
+                        {CONTACT_TYPE_LABEL[c.contact_type] || c.contact_type}
+                      </span>
+                    ) : <span style={{ color: "#475569", fontSize: 12 }}>—</span>}
+                  </td>
                   <td style={{ padding: "12px 14px" }}>
                     <button
                       onClick={() => cycleStatus(c.id)}
@@ -1524,6 +1578,7 @@ const TRK_ORG_TYPES = [
   { value: "rehab_center", label: "Rehab Center", color: "#8b5cf6" },
   { value: "assisted_living", label: "Assisted Living", color: "#f59e0b" },
   { value: "doctors_office", label: "Doctor's Office", color: "#fb7185" },
+  { value: "pediatric_practice", label: "Pediatric Practice", color: "#ec4899" },
   { value: "adult_day_program", label: "Adult Day Program", color: "#22c55e" },
   { value: "networking", label: "Networking", color: "#6b7280" },
   { value: "insurance_company", label: "Insurance Company", color: "#ec4899" },
@@ -1877,7 +1932,7 @@ function TrackerTab({ supabase }) {
           <span style={{ color: "#94a3b8", fontSize: 12 }}>{c.agency_name}</span>
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-          <TrkBadge text={trkPretty(c.contact_type || "support_coordination")} color="#0ea5e9" />
+          <TrkBadge text={CONTACT_TYPE_LABEL[c.contact_type] || trkPretty(c.contact_type || "support_coordination")} color={CONTACT_TYPE_COLOR[c.contact_type] || "#0ea5e9"} />
           <TrkBadge text={stage} color={TRK_STAGE_COLOR[stage]} onClick={() => cycleContactStage(c)} />
           <TrkBadge text={c.receptivity || "unknown"} color={TRK_RECEPTIVITY_COLOR[c.receptivity || "unknown"]} onClick={() => cycleReceptivity(c)} />
           <TrkBadge text={trkPretty(c.contact_role || "unknown")} color={TRK_ROLE_COLOR[c.contact_role || "unknown"]} onClick={() => cycleRole(c)} star={c.contact_role === "champion"} />
