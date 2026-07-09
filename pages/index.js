@@ -1716,6 +1716,11 @@ function TrackerTab({ supabase }) {
   const [completingTask, setCompletingTask] = useState(null);
   const [completingOutcome, setCompletingOutcome] = useState("");
 
+  // Subtasks — a task attached to a specific logged activity, checkable inline.
+  const [addingTaskFor, setAddingTaskFor] = useState(null); // activity id with the inline add-task form open
+  const emptySubtask = { due_date: trkToday(), notes: "" };
+  const [subtaskDraft, setSubtaskDraft] = useState(emptySubtask);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     const [c, o, a, t] = await Promise.all([
@@ -1830,6 +1835,30 @@ function TrackerTab({ supabase }) {
     setTaskForm(emptyTask);
     setTaskSearch("");
     loadAll();
+  };
+
+  // Add a subtask to a specific logged activity.
+  const addSubtask = async (activity) => {
+    if (!subtaskDraft.notes.trim()) return;
+    const { data: inserted } = await supabase.from("followup_tasks").insert([{
+      activity_id: activity.id,
+      contact_id: activity.contact_id,
+      organization_id: activity.organization_id || null,
+      task_type: "follow_up",
+      due_date: subtaskDraft.due_date || trkToday(),
+      priority: "normal",
+      notes: subtaskDraft.notes.trim(),
+    }]).select();
+    if (inserted?.[0]) setTasks((prev) => [...prev, inserted[0]]);
+    setAddingTaskFor(null);
+    setSubtaskDraft(emptySubtask);
+  };
+
+  // Check a subtask done (or reopen it) without logging a new activity — it's a checklist item, not a follow-up.
+  const toggleSubtask = async (task) => {
+    const nextCompleted = !task.completed;
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, completed: nextCompleted, completed_at: nextCompleted ? new Date().toISOString() : null } : t)));
+    await supabase.from("followup_tasks").update({ completed: nextCompleted, completed_at: nextCompleted ? new Date().toISOString() : null }).eq("id", task.id);
   };
 
   const completeTask = async (task) => {
@@ -2081,6 +2110,48 @@ function TrackerTab({ supabase }) {
                   )}
                 </div>
               )}
+              {(() => {
+                const subtasks = tasks.filter((t) => t.activity_id === a.id);
+                const isAdding = addingTaskFor === a.id;
+                return (
+                  <div style={{ marginTop: 10, paddingTop: subtasks.length || isAdding ? 10 : 0, borderTop: subtasks.length || isAdding ? "1px solid #1e293b" : "none" }}>
+                    {subtasks.map((t) => (
+                      <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", cursor: "pointer" }}>
+                        <input type="checkbox" checked={!!t.completed} onChange={() => toggleSubtask(t)} style={{ accentColor: "#6366f1", cursor: "pointer" }} />
+                        <span style={{ color: t.completed ? "#475569" : "#cbd5e1", fontSize: 12, textDecoration: t.completed ? "line-through" : "none" }}>{t.notes}</span>
+                        <span style={{ color: "#64748b", fontSize: 11, marginLeft: "auto" }}>{t.due_date}</span>
+                      </label>
+                    ))}
+                    {isAdding ? (
+                      <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
+                        <input
+                          autoFocus
+                          placeholder="Task description..."
+                          value={subtaskDraft.notes}
+                          onChange={(e) => setSubtaskDraft({ ...subtaskDraft, notes: e.target.value })}
+                          onKeyDown={(e) => e.key === "Enter" && addSubtask(a)}
+                          style={{ ...inputStyle, flex: 1, minWidth: 160, padding: "5px 10px", fontSize: 12 }}
+                        />
+                        <input
+                          type="date"
+                          value={subtaskDraft.due_date}
+                          onChange={(e) => setSubtaskDraft({ ...subtaskDraft, due_date: e.target.value })}
+                          style={{ ...inputStyle, width: "auto", padding: "5px 10px", fontSize: 12 }}
+                        />
+                        <button onClick={() => addSubtask(a)} style={{ ...btnPrimary, padding: "5px 12px", fontSize: 12 }}>Add</button>
+                        <button onClick={() => { setAddingTaskFor(null); setSubtaskDraft(emptySubtask); }} style={{ ...btnSecondary, padding: "5px 12px", fontSize: 12 }}>Cancel</button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { setAddingTaskFor(a.id); setSubtaskDraft(emptySubtask); }}
+                        style={{ background: "none", border: "none", color: "#6366f1", fontSize: 12, cursor: "pointer", padding: "4px 0", fontWeight: 600 }}
+                      >
+                        + Add task
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           );
         })}
