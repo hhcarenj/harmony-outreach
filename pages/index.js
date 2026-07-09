@@ -1156,17 +1156,21 @@ function CampaignsTab({ supabase, config }) {
   const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
+    // Load every contact, not just ones with an email — filters need to surface
+    // Nursing Homes, Doctor's Offices, etc. even though most don't have an email
+    // on file yet. Email-only gating happens at selection/send time below.
     const { data: c } = await supabase.from("sc_contacts").select("*");
     const { data: t } = await supabase.from("email_templates").select("*");
-    setContacts((c || []).filter(x => x.email));
+    setContacts(c || []);
     setTemplates(t || []);
   }, [supabase]);
 
   useEffect(() => { load(); }, [load]);
 
   // Same search + filter semantics as the Contacts tab, so you can target the exact
-  // same slice of people here that you'd find there — every contact with an email
-  // is reachable, not just "New."
+  // same slice of people here that you'd find there. This includes contacts with no
+  // email — they're shown greyed out below (can't select/send) so you can see who
+  // exists and know they need an email added.
   const filtered = contacts.filter(c => {
     const matchesSearch = !search || [c.agency_name, c.email, c.counties_served, c.contact_name]
       .some(f => (f || "").toLowerCase().includes(search.toLowerCase()));
@@ -1176,16 +1180,19 @@ function CampaignsTab({ supabase, config }) {
       : filter === "south" ? matchesRegion(c, "south")
       : filter === "central" ? matchesRegion(c, "central")
       : filter === "north" ? matchesRegion(c, "north")
+      : filter === "has_email" ? !!c.email
       : filter === "not_contacted" ? (c.status === "new" || c.status === null)
       : c.status === filter;
     return matchesSearch && matchesStatus;
   });
+  const sendable = filtered.filter(c => c.email);
+  const noEmailCount = filtered.length - sendable.length;
 
   const toggleAll = () => {
-    if (selectedContacts.size === filtered.length) {
+    if (selectedContacts.size === sendable.length && sendable.length > 0) {
       setSelectedContacts(new Set());
     } else {
-      setSelectedContacts(new Set(filtered.map(c => c.id)));
+      setSelectedContacts(new Set(sendable.map(c => c.id)));
     }
   };
 
@@ -1213,7 +1220,7 @@ function CampaignsTab({ supabase, config }) {
     if (!template) return;
     setSending(true);
     setSendLog([]);
-    const toSend = filtered.filter(c => selectedContacts.has(c.id));
+    const toSend = filtered.filter(c => selectedContacts.has(c.id) && c.email);
     let sent = 0;
 
     for (let i = 0; i < toSend.length; i++) {
@@ -1303,7 +1310,8 @@ function CampaignsTab({ supabase, config }) {
         <div>
           <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 6 }}>Filter</label>
           <select value={filter} onChange={e => { setFilter(e.target.value); setSelectedContacts(new Set()); }} style={{ ...inputStyle, cursor: "pointer" }}>
-            <option value="all">All with Email ({contacts.length})</option>
+            <option value="all">All ({contacts.length})</option>
+            <option value="has_email">Has Email</option>
             <option value="new">New</option>
             <option value="contacted">Contacted</option>
             <option value="replied">Replied</option>
@@ -1343,11 +1351,14 @@ function CampaignsTab({ supabase, config }) {
 
       <div style={{ ...cardStyle, marginBottom: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <button onClick={toggleAll} style={btnSecondary}>
-              {selectedContacts.size === filtered.length && filtered.length > 0 ? "Deselect All" : `Select All (${filtered.length})`}
+              {selectedContacts.size === sendable.length && sendable.length > 0 ? "Deselect All" : `Select All (${sendable.length})`}
             </button>
             <span style={{ color: "#64748b", fontSize: 13 }}>{selectedContacts.size} selected</span>
+            {noEmailCount > 0 && (
+              <span style={{ color: "#f59e0b", fontSize: 12 }}>· {noEmailCount} match but have no email on file</span>
+            )}
           </div>
           <button
             onClick={sendEmails}
@@ -1360,22 +1371,34 @@ function CampaignsTab({ supabase, config }) {
 
         <div style={{ maxHeight: 320, overflow: "auto" }}>
           {filtered.length === 0 ? (
-            <p style={{ color: "#64748b", fontSize: 13, textAlign: "center", padding: 24 }}>No contacts match this filter or none have emails.</p>
+            <p style={{ color: "#64748b", fontSize: 13, textAlign: "center", padding: 24 }}>No contacts match this filter.</p>
           ) : (
             filtered.map(c => (
-              <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #1e293b", cursor: "pointer" }}>
+              <label
+                key={c.id}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #1e293b",
+                  cursor: c.email ? "pointer" : "not-allowed", opacity: c.email ? 1 : 0.45,
+                }}
+              >
                 <input
                   type="checkbox"
                   checked={selectedContacts.has(c.id)}
+                  disabled={!c.email}
                   onChange={() => {
+                    if (!c.email) return;
                     const next = new Set(selectedContacts);
                     next.has(c.id) ? next.delete(c.id) : next.add(c.id);
                     setSelectedContacts(next);
                   }}
-                  style={{ accentColor: "#6366f1" }}
+                  style={{ accentColor: "#6366f1", cursor: c.email ? "pointer" : "not-allowed" }}
                 />
                 <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, minWidth: 220 }}>{c.agency_name}</span>
-                <span style={{ color: "#7dd3fc", fontSize: 12 }}>{c.email}</span>
+                {c.email ? (
+                  <span style={{ color: "#7dd3fc", fontSize: 12 }}>{c.email}</span>
+                ) : (
+                  <span style={{ color: "#f59e0b", fontSize: 12, fontStyle: "italic" }}>No email — can't send</span>
+                )}
                 <span style={{ color: "#475569", fontSize: 11, marginLeft: "auto", flexShrink: 0 }}>{c.counties_served || ""}</span>
               </label>
             ))
