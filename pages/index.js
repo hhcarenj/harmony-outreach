@@ -1428,6 +1428,15 @@ function SequencesTab({ supabase }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // Only sequences that are no longer running (exited via reply, or manually stopped) can be deleted —
+  // active/paused/completed sequences stay to preserve history and the send schedule.
+  const [confirmDeleteSeq, setConfirmDeleteSeq] = useState(null);
+  const deleteSequence = async (id) => {
+    setSequences((prev) => prev.filter((s) => s.id !== id));
+    setConfirmDeleteSeq(null);
+    await supabase.from("email_sequences").delete().eq("id", id);
+  };
+
   const runCheck = async () => {
     setRunning(true);
     setRunResult(null);
@@ -1563,12 +1572,32 @@ function SequencesTab({ supabase }) {
                   <td style={{ padding: "12px 14px", color: "#94a3b8", fontSize: 12, whiteSpace: "nowrap" }}>{s.next_send_date || "—"}</td>
                   <td style={{ padding: "12px 14px", color: "#94a3b8", fontSize: 13 }}>{s.current_step} / {TOTAL_STEPS}</td>
                   <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
-                    <button
-                      onClick={() => setModalSeq(s)}
-                      style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, padding: "4px 12px", cursor: "pointer" }}
-                    >
-                      View
-                    </button>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-end" }}>
+                      <button
+                        onClick={() => setModalSeq(s)}
+                        style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, padding: "4px 12px", cursor: "pointer" }}
+                      >
+                        View
+                      </button>
+                      {(s.status === "exited_reply" || s.status === "stopped") && (
+                        confirmDeleteSeq === s.id ? (
+                          <>
+                            <button onClick={() => deleteSequence(s.id)} style={{ background: "none", border: "1px solid #f8717155", borderRadius: 6, color: "#f87171", fontSize: 12, padding: "4px 10px", cursor: "pointer" }}>Confirm</button>
+                            <button onClick={() => setConfirmDeleteSeq(null)} style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, padding: "4px 10px", cursor: "pointer" }}>Cancel</button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => setConfirmDeleteSeq(s.id)}
+                            title="Delete sequence"
+                            style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, padding: "4px 10px", cursor: "pointer" }}
+                            onMouseEnter={e => { e.target.style.borderColor = "#f87171"; e.target.style.color = "#f87171"; }}
+                            onMouseLeave={e => { e.target.style.borderColor = "#334155"; e.target.style.color = "#94a3b8"; }}
+                          >
+                            Delete
+                          </button>
+                        )
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1620,6 +1649,12 @@ const TRK_ACTIVITY_LABEL = Object.fromEntries(TRK_ACTIVITY_TYPES.map((a) => [a.v
 const TRK_ACTIVITY_ICON = Object.fromEntries(TRK_ACTIVITY_TYPES.map((a) => [a.value, a.icon]));
 
 const TRK_OUTCOMES = ["", "positive", "neutral", "no_answer", "left_message", "referral_received", "not_interested"];
+
+// Priority tiers for the Activity Log, hottest lead first — referral received are connections to
+// maintain, then positive, then neutral, then everything else (coldest — no clear positive signal yet).
+const TRK_OUTCOME_RANK = { referral_received: 0, positive: 1, neutral: 2 };
+const trkOutcomeRank = (a) => (a.outcome in TRK_OUTCOME_RANK ? TRK_OUTCOME_RANK[a.outcome] : 3);
+const TRK_OUTCOME_RANK_COLOR = ["#22c55e", "#0ea5e9", "#f59e0b", "#475569"];
 
 const TRK_TASK_TYPES = [
   { value: "call", label: "Call", activity: "call" },
@@ -1707,14 +1742,6 @@ function TrackerTab({ supabase }) {
   const emptyLog = { contact_id: "", activity_type: "call", activity_date: trkToday(), location: "", person_met: "", outcome: "", notes: "" };
   const [logForm, setLogForm] = useState(emptyLog);
   const [logSearch, setLogSearch] = useState("");
-
-  // Follow-up modal + inline completion
-  const [showTaskModal, setShowTaskModal] = useState(false);
-  const emptyTask = { contact_id: "", task_type: "call", due_date: trkToday(), priority: "normal", notes: "" };
-  const [taskForm, setTaskForm] = useState(emptyTask);
-  const [taskSearch, setTaskSearch] = useState("");
-  const [completingTask, setCompletingTask] = useState(null);
-  const [completingOutcome, setCompletingOutcome] = useState("");
 
   // Subtasks — a task attached to a specific logged activity, checkable inline.
   const [addingTaskFor, setAddingTaskFor] = useState(null); // activity id with the inline add-task form open
@@ -1817,26 +1844,6 @@ function TrackerTab({ supabase }) {
     loadAll();
   };
 
-  const saveTask = async () => {
-    const contact = contacts.find((c) => c.id === taskForm.contact_id);
-    if (!contact || !taskForm.task_type || !taskForm.due_date) { alert("Pick a contact, task type, and due date."); return; }
-    await supabase.from("followup_tasks").insert([{
-      contact_id: contact.id,
-      organization_id: contact.organization_id || null,
-      task_type: taskForm.task_type,
-      due_date: taskForm.due_date,
-      priority: taskForm.priority,
-      notes: taskForm.notes || null,
-    }]);
-    if (!contact.next_followup_date || taskForm.due_date < contact.next_followup_date) {
-      await supabase.from("sc_contacts").update({ next_followup_date: taskForm.due_date, updated_at: new Date().toISOString() }).eq("id", contact.id);
-    }
-    setShowTaskModal(false);
-    setTaskForm(emptyTask);
-    setTaskSearch("");
-    loadAll();
-  };
-
   // Add a subtask to a specific logged activity.
   const addSubtask = async (activity) => {
     if (!subtaskDraft.notes.trim()) return;
@@ -1861,16 +1868,10 @@ function TrackerTab({ supabase }) {
     await supabase.from("followup_tasks").update({ completed: nextCompleted, completed_at: nextCompleted ? new Date().toISOString() : null }).eq("id", task.id);
   };
 
-  const completeTask = async (task) => {
-    await supabase.from("followup_tasks").update({ completed: true, completed_at: new Date().toISOString() }).eq("id", task.id);
-    const contact = contacts.find((c) => c.id === task.contact_id);
-    if (contact) {
-      const activity_type = TRK_TASK_ACTIVITY[task.task_type] || "call";
-      await logActivityRow({ contact, activity_type, activity_date: trkToday(), outcome: completingOutcome || "", notes: task.notes || "" });
-    }
-    setCompletingTask(null);
-    setCompletingOutcome("");
-    loadAll();
+  // Remove a subtask outright — for fixing mistakes, no confirmation needed since it's low-stakes.
+  const deleteSubtask = async (task) => {
+    setTasks((prev) => prev.filter((t) => t.id !== task.id));
+    await supabase.from("followup_tasks").delete().eq("id", task.id);
   };
 
   // ── Derived stats ──
@@ -2059,6 +2060,10 @@ function TrackerTab({ supabase }) {
         if (!hay.includes(orgSearch.toLowerCase())) return false;
       }
       return true;
+    }).sort((a, b) => {
+      const r = trkOutcomeRank(a) - trkOutcomeRank(b);
+      if (r !== 0) return r;
+      return (b.activity_date || "").localeCompare(a.activity_date || ""); // most recent first within a tier
     });
     return (
       <div>
@@ -2072,6 +2077,7 @@ function TrackerTab({ supabase }) {
           <input placeholder="Search org/contact..." value={orgSearch} onChange={(e) => setOrgSearch(e.target.value)} style={{ ...inputStyle, width: 220 }} />
           <button onClick={() => setShowLogModal(true)} style={{ ...btnPrimary, marginLeft: "auto" }}>+ Log Activity</button>
         </div>
+        <p style={{ color: "#475569", fontSize: 11, marginBottom: 12 }}>Sorted by priority — referral received first, then positive, then neutral, then everything else.</p>
         {filtered.length === 0 ? (
           <div style={{ ...cardStyle, textAlign: "center", padding: 40, color: "#64748b" }}>No activities logged yet.</div>
         ) : filtered.map((a) => {
@@ -2079,14 +2085,15 @@ function TrackerTab({ supabase }) {
           const contact = contacts.find((c) => c.id === a.contact_id);
           const noteOpen = expandedNotes.has(a.id);
           const longNote = (a.notes || "").length > 60;
+          const rankColor = TRK_OUTCOME_RANK_COLOR[trkOutcomeRank(a)];
           return (
-            <div key={a.id} style={{ ...cardStyle, padding: "12px 16px", marginBottom: 8 }}>
+            <div key={a.id} style={{ ...cardStyle, padding: "12px 16px", marginBottom: 8, borderLeft: `3px solid ${rankColor}` }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                 <span style={{ color: "#64748b", fontSize: 12, minWidth: 92 }}>{a.activity_date}</span>
                 <span style={{ fontSize: 16 }}>{TRK_ACTIVITY_ICON[a.activity_type] || "•"}</span>
                 <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, minWidth: 160 }}>{org?.name || contact?.agency_name || contact?.contact_name || "—"}</span>
                 <span style={{ color: "#94a3b8", fontSize: 12 }}>{TRK_ACTIVITY_LABEL[a.activity_type] || a.activity_type}</span>
-                {a.outcome && <TrkBadge text={trkPretty(a.outcome)} color={a.outcome === "referral_received" ? "#22c55e" : "#94a3b8"} />}
+                {a.outcome && <TrkBadge text={trkPretty(a.outcome)} color={rankColor} />}
                 <span style={{ color: "#0ea5e9", fontSize: 11, fontWeight: 700 }}>+{a.points_awarded || 0}</span>
                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
                   {confirmDelete === a.id ? (
@@ -2116,11 +2123,22 @@ function TrackerTab({ supabase }) {
                 return (
                   <div style={{ marginTop: 10, paddingTop: subtasks.length || isAdding ? 10 : 0, borderTop: subtasks.length || isAdding ? "1px solid #1e293b" : "none" }}>
                     {subtasks.map((t) => (
-                      <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", cursor: "pointer" }}>
-                        <input type="checkbox" checked={!!t.completed} onChange={() => toggleSubtask(t)} style={{ accentColor: "#6366f1", cursor: "pointer" }} />
-                        <span style={{ color: t.completed ? "#475569" : "#cbd5e1", fontSize: 12, textDecoration: t.completed ? "line-through" : "none" }}>{t.notes}</span>
-                        <span style={{ color: "#64748b", fontSize: 11, marginLeft: "auto" }}>{t.due_date}</span>
-                      </label>
+                      <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", flex: 1, minWidth: 0 }}>
+                          <input type="checkbox" checked={!!t.completed} onChange={() => toggleSubtask(t)} style={{ accentColor: "#6366f1", cursor: "pointer", flexShrink: 0 }} />
+                          <span style={{ color: t.completed ? "#475569" : "#cbd5e1", fontSize: 12, textDecoration: t.completed ? "line-through" : "none" }}>{t.notes}</span>
+                        </label>
+                        <span style={{ color: "#64748b", fontSize: 11, marginLeft: "auto", flexShrink: 0 }}>{t.due_date}</span>
+                        <button
+                          onClick={() => deleteSubtask(t)}
+                          title="Delete task"
+                          style={{ background: "none", border: "none", color: "#64748b", fontSize: 13, cursor: "pointer", padding: "0 2px", flexShrink: 0 }}
+                          onMouseEnter={e => { e.target.style.color = "#f87171"; }}
+                          onMouseLeave={e => { e.target.style.color = "#64748b"; }}
+                        >
+                          ✕
+                        </button>
+                      </div>
                     ))}
                     {isAdding ? (
                       <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
@@ -2159,49 +2177,6 @@ function TrackerTab({ supabase }) {
     );
   };
 
-  const renderFollowups = () => {
-    const open = tasks.filter((t) => !t.completed);
-    return (
-      <div>
-        <div style={{ display: "flex", marginBottom: 16 }}>
-          <button onClick={() => setShowTaskModal(true)} style={{ ...btnPrimary, marginLeft: "auto" }}>+ Add Task</button>
-        </div>
-        {open.length === 0 ? (
-          <div style={{ ...cardStyle, textAlign: "center", padding: 40, color: "#64748b" }}>No open follow-up tasks.</div>
-        ) : open.map((t) => {
-          const contact = contacts.find((c) => c.id === t.contact_id);
-          const overdue = t.due_date < trkToday();
-          const dueToday = t.due_date === trkToday();
-          const rowColor = overdue ? "#ef444433" : dueToday ? "#f59e0b33" : "#1e293b";
-          const accent = overdue ? "#ef4444" : dueToday ? "#f59e0b" : "#64748b";
-          return (
-            <div key={t.id} style={{ ...cardStyle, padding: "12px 16px", marginBottom: 8, borderColor: rowColor }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                <span style={{ color: accent, fontSize: 12, fontWeight: 700, minWidth: 92 }}>{t.due_date}</span>
-                <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, minWidth: 160 }}>{contact ? contactLabel(contact) : "—"}</span>
-                <TrkBadge text={trkPretty(t.task_type)} color="#6366f1" />
-                <TrkBadge text={t.priority || "normal"} color={t.priority === "high" ? "#ef4444" : t.priority === "low" ? "#64748b" : "#94a3b8"} />
-                {t.notes && <span style={{ color: "#475569", fontSize: 12 }}>{t.notes}</span>}
-                {completingTask === t.id ? (
-                  <div style={{ display: "flex", gap: 6, marginLeft: "auto", alignItems: "center" }}>
-                    <select value={completingOutcome} onChange={(e) => setCompletingOutcome(e.target.value)} style={{ ...inputStyle, width: "auto", padding: "6px 10px" }}>
-                      <option value="">outcome…</option>
-                      {TRK_OUTCOMES.filter(Boolean).map((o) => <option key={o} value={o}>{trkPretty(o)}</option>)}
-                    </select>
-                    <button onClick={() => completeTask(t)} style={{ ...btnPrimary, padding: "6px 12px", fontSize: 12 }}>Confirm</button>
-                    <button onClick={() => { setCompletingTask(null); setCompletingOutcome(""); }} style={{ ...btnSecondary, padding: "6px 12px", fontSize: 12 }}>✕</button>
-                  </div>
-                ) : (
-                  <button onClick={() => { setCompletingTask(t.id); setCompletingOutcome(""); }} style={{ ...btnSecondary, marginLeft: "auto", padding: "6px 14px", fontSize: 12 }}>Done</button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
   const contactOptions = (search) => contacts.filter((c) => {
     if (!search) return true;
     return `${c.contact_name || ""} ${c.agency_name || ""}`.toLowerCase().includes(search.toLowerCase());
@@ -2228,7 +2203,6 @@ function TrackerTab({ supabase }) {
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={() => setSubView("pipeline")} style={pillToggle(subView === "pipeline")}>Pipeline</button>
           <button onClick={() => setSubView("activity")} style={pillToggle(subView === "activity")}>Activity Log</button>
-          <button onClick={() => setSubView("followup")} style={pillToggle(subView === "followup")}>Follow-up Queue</button>
         </div>
       </div>
 
@@ -2240,7 +2214,6 @@ function TrackerTab({ supabase }) {
         <>
           {subView === "pipeline" && renderPipeline()}
           {subView === "activity" && renderActivityLog()}
-          {subView === "followup" && renderFollowups()}
         </>
       )}
 
@@ -2295,47 +2268,6 @@ function TrackerTab({ supabase }) {
           </div>
         </div>
       ), () => { setShowLogModal(false); setLogForm(emptyLog); setLogSearch(""); })}
-
-      {showTaskModal && modalShell("Add Follow-up Task", (
-        <div>
-          <div style={{ marginBottom: 12 }}>
-            {fieldLabel("Contact")}
-            <input placeholder="Search contacts…" value={taskSearch} onChange={(e) => setTaskSearch(e.target.value)} style={{ ...inputStyle, marginBottom: 6 }} />
-            <select value={taskForm.contact_id} onChange={(e) => setTaskForm({ ...taskForm, contact_id: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
-              <option value="">Select contact…</option>
-              {contactOptions(taskSearch).map((c) => <option key={c.id} value={c.id}>{contactLabel(c)}</option>)}
-            </select>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
-            <div>
-              {fieldLabel("Task Type")}
-              <select value={taskForm.task_type} onChange={(e) => setTaskForm({ ...taskForm, task_type: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
-                {TRK_TASK_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-            </div>
-            <div>
-              {fieldLabel("Due Date")}
-              <input type="date" value={taskForm.due_date} onChange={(e) => setTaskForm({ ...taskForm, due_date: e.target.value })} style={inputStyle} />
-            </div>
-            <div>
-              {fieldLabel("Priority")}
-              <select value={taskForm.priority} onChange={(e) => setTaskForm({ ...taskForm, priority: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
-                <option value="low">Low</option>
-                <option value="normal">Normal</option>
-                <option value="high">High</option>
-              </select>
-            </div>
-          </div>
-          <div style={{ marginBottom: 16 }}>
-            {fieldLabel("Notes")}
-            <textarea value={taskForm.notes} onChange={(e) => setTaskForm({ ...taskForm, notes: e.target.value })} rows={3} style={{ ...inputStyle, resize: "vertical" }} />
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={saveTask} style={btnPrimary}>Save Task</button>
-            <button onClick={() => { setShowTaskModal(false); setTaskForm(emptyTask); setTaskSearch(""); }} style={btnSecondary}>Cancel</button>
-          </div>
-        </div>
-      ), () => { setShowTaskModal(false); setTaskForm(emptyTask); setTaskSearch(""); })}
     </div>
   );
 }
