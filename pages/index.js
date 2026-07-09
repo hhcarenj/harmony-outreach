@@ -467,6 +467,17 @@ const CONTACT_TYPES = [
 const CONTACT_TYPE_COLOR = Object.fromEntries(CONTACT_TYPES.map((t) => [t.value, t.color]));
 const CONTACT_TYPE_LABEL = Object.fromEntries(CONTACT_TYPES.map((t) => [t.value, t.label]));
 
+// ── NJ region grouping (shared: Contacts tab + Campaigns tab search/filter parity) ──
+const REGIONS = {
+  south: ["atlantic", "burlington", "camden", "cape may", "cumberland", "gloucester", "salem"],
+  central: ["hunterdon", "mercer", "middlesex", "monmouth", "ocean", "somerset", "union"],
+  north: ["bergen", "essex", "hudson", "morris", "passaic", "sussex", "warren"],
+};
+function matchesRegion(c, region) {
+  const cs = (c.counties_served || "").toLowerCase();
+  return REGIONS[region].some((county) => cs.includes(county));
+}
+
 // ── Contacts Tab ──
 function ContactsTab({ supabase }) {
   const [contacts, setContacts] = useState([]);
@@ -632,16 +643,6 @@ function ContactsTab({ supabase }) {
     await supabase.from("sc_contacts").delete().eq("id", id);
     if (editingContact === id) cancelEdit();
     load();
-  };
-
-  const REGIONS = {
-    south: ["atlantic", "burlington", "camden", "cape may", "cumberland", "gloucester", "salem"],
-    central: ["hunterdon", "mercer", "middlesex", "monmouth", "ocean", "somerset", "union"],
-    north: ["bergen", "essex", "hudson", "morris", "passaic", "sussex", "warren"],
-  };
-  const matchesRegion = (c, region) => {
-    const cs = (c.counties_served || "").toLowerCase();
-    return REGIONS[region].some(county => cs.includes(county));
   };
 
   const filtered = contacts.filter(c => {
@@ -1151,7 +1152,8 @@ function CampaignsTab({ supabase, config }) {
   const [sendLog, setSendLog] = useState([]);
   const [batchSize, setBatchSize] = useState(10);
   const [delayMs, setDelayMs] = useState(3000);
-  const [filter, setFilter] = useState("new");
+  const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
     const { data: c } = await supabase.from("sc_contacts").select("*");
@@ -1162,20 +1164,21 @@ function CampaignsTab({ supabase, config }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const CAMPAIGN_REGIONS = {
-    south: ["atlantic", "burlington", "camden", "cape may", "cumberland", "gloucester", "salem"],
-    central: ["hunterdon", "mercer", "middlesex", "monmouth", "ocean", "somerset", "union"],
-    north: ["bergen", "essex", "hudson", "morris", "passaic", "sussex", "warren"],
-  };
+  // Same search + filter semantics as the Contacts tab, so you can target the exact
+  // same slice of people here that you'd find there — every contact with an email
+  // is reachable, not just "New."
   const filtered = contacts.filter(c => {
-    if (filter === "burlington") return (c.counties_served || "").toLowerCase().includes("burlington");
-    if (filter === "south" || filter === "central" || filter === "north") {
-      const cs = (c.counties_served || "").toLowerCase();
-      return CAMPAIGN_REGIONS[filter].some(county => cs.includes(county));
-    }
-    if (filter === "new") return c.status === "new";
-    if (filter === "not_contacted") return c.status === "new" || c.status === null;
-    return true;
+    const matchesSearch = !search || [c.agency_name, c.email, c.counties_served, c.contact_name]
+      .some(f => (f || "").toLowerCase().includes(search.toLowerCase()));
+    const matchesStatus = filter === "all" ? true
+      : filter.startsWith("type:") ? (c.contact_type || "") === filter.slice(5)
+      : filter === "burlington" ? (c.counties_served || "").toLowerCase().includes("burlington")
+      : filter === "south" ? matchesRegion(c, "south")
+      : filter === "central" ? matchesRegion(c, "central")
+      : filter === "north" ? matchesRegion(c, "north")
+      : filter === "not_contacted" ? (c.status === "new" || c.status === null)
+      : c.status === filter;
+    return matchesSearch && matchesStatus;
   });
 
   const toggleAll = () => {
@@ -1276,7 +1279,14 @@ function CampaignsTab({ supabase, config }) {
   return (
     <div>
       <h2 style={{ color: "#f1f5f9", fontSize: 20, marginBottom: 4 }}>Send Campaign</h2>
-      <p style={{ color: "#64748b", fontSize: 13, marginBottom: 20 }}>Select a template and contacts, then send in controlled batches to protect your domain reputation.</p>
+      <p style={{ color: "#64748b", fontSize: 13, marginBottom: 16 }}>Select a template and contacts, then send in controlled batches to protect your domain reputation.</p>
+
+      <input
+        placeholder="Search agencies, emails, counties..."
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        style={{ ...inputStyle, width: "100%", marginBottom: 12, boxSizing: "border-box" }}
+      />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
         <div>
@@ -1294,11 +1304,19 @@ function CampaignsTab({ supabase, config }) {
           <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 6 }}>Filter</label>
           <select value={filter} onChange={e => { setFilter(e.target.value); setSelectedContacts(new Set()); }} style={{ ...inputStyle, cursor: "pointer" }}>
             <option value="all">All with Email ({contacts.length})</option>
-            <option value="new">New / Not Contacted</option>
+            <option value="new">New</option>
+            <option value="contacted">Contacted</option>
+            <option value="replied">Replied</option>
+            <option value="converted">Converted</option>
             <option value="south">South Jersey</option>
             <option value="central">Central Jersey</option>
             <option value="north">North Jersey</option>
             <option value="burlington">Burlington County</option>
+            <optgroup label="Contact Type">
+              {CONTACT_TYPES.map(t => (
+                <option key={t.value} value={`type:${t.value}`}>{t.label}</option>
+              ))}
+            </optgroup>
           </select>
         </div>
         <div>
