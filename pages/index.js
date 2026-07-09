@@ -917,14 +917,25 @@ function ContactsTab({ supabase }) {
                       : <span style={{ color: "#475569", fontSize: 12 }}>—</span>}
                   </td>
                   <td style={{ padding: "12px 14px", whiteSpace: "nowrap" }}>
-                    <button
-                      onClick={() => startEdit(c)}
-                      style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, padding: "4px 12px", cursor: "pointer", transition: "all 0.2s" }}
-                      onMouseEnter={e => { e.target.style.borderColor = "#6366f1"; e.target.style.color = "#a78bfa"; }}
-                      onMouseLeave={e => { e.target.style.borderColor = "#334155"; e.target.style.color = "#94a3b8"; }}
-                    >
-                      Edit
-                    </button>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        onClick={() => startEdit(c)}
+                        style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, padding: "4px 12px", cursor: "pointer", transition: "all 0.2s" }}
+                        onMouseEnter={e => { e.target.style.borderColor = "#6366f1"; e.target.style.color = "#a78bfa"; }}
+                        onMouseLeave={e => { e.target.style.borderColor = "#334155"; e.target.style.color = "#94a3b8"; }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => deleteContact(c.id)}
+                        title="Delete contact"
+                        style={{ background: "none", border: "1px solid #334155", borderRadius: 6, color: "#94a3b8", fontSize: 12, padding: "4px 12px", cursor: "pointer", transition: "all 0.2s" }}
+                        onMouseEnter={e => { e.target.style.borderColor = "#f87171"; e.target.style.color = "#f87171"; }}
+                        onMouseLeave={e => { e.target.style.borderColor = "#334155"; e.target.style.color = "#94a3b8"; }}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
