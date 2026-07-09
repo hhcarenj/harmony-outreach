@@ -963,6 +963,12 @@ function ContactsTab({ supabase }) {
 // sequence and sorted chronologically by step; everything else falls into "Other
 // Templates". Grouping is purely organizational — every template is still selected
 // and sent individually, nothing here couples sends together. ──
+// Plain-language explainer so anyone opening the dashboard for the first time knows
+// what each sequence is and when it fires, without having to dig through the Sequences tab.
+const SEQUENCE_GROUP_BLURB = {
+  "Sequence A": "Auto-sent after you log an in-person visit — 5 emails over 21 days, warm & personal tone.",
+  "Sequence B": "Auto-sent to new contacts with no visit yet — 5 emails over 23 days, professional & credibility-first tone.",
+};
 const SEQ_TEMPLATE_NAME_RE = /^Seq ([A-Za-z0-9]+) - Step (\d+)/;
 function templateGroupInfo(t) {
   const m = (t.name || "").match(SEQ_TEMPLATE_NAME_RE);
@@ -1107,10 +1113,13 @@ Harmony Homecare Agency, LLC | 1852 Burlington Mt-Holy Road, Westampton, NJ 0806
           template is still edited/deleted/sent individually; grouping is just organization. */}
       {groupTemplates(templates).map(([groupName, g]) => (
         <div key={groupName} style={{ marginBottom: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
             <h3 style={{ color: g.isSequence ? "#a78bfa" : "#64748b", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>{groupName}</h3>
             <span style={{ color: "#475569", fontSize: 12 }}>({g.items.length})</span>
           </div>
+          {SEQUENCE_GROUP_BLURB[groupName] && (
+            <p style={{ color: "#64748b", fontSize: 12, margin: "0 0 10px" }}>{SEQUENCE_GROUP_BLURB[groupName]}</p>
+          )}
           {g.items.map(t => (
             <div key={t.id} style={{ ...cardStyle, marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
@@ -1290,6 +1299,18 @@ function CampaignsTab({ supabase, config }) {
           <input type="number" value={delayMs / 1000} onChange={e => setDelayMs((parseFloat(e.target.value) || 3) * 1000)} style={inputStyle} min={1} max={60} />
         </div>
       </div>
+
+      {selectedTemplate && (() => {
+        const t = templates.find(x => x.id === selectedTemplate);
+        const info = t ? templateGroupInfo(t) : null;
+        const blurb = info && SEQUENCE_GROUP_BLURB[info.group];
+        if (!blurb) return null;
+        return (
+          <p style={{ color: "#64748b", fontSize: 12, marginTop: -12, marginBottom: 20, padding: "8px 12px", background: "#0f172a", borderRadius: 6 }}>
+            ℹ️ Step {info.step} of <strong style={{ color: "#94a3b8" }}>{info.group}</strong> — {blurb} Sending it here is a one-off to your selected contacts and won't affect the automated schedule for anyone currently in that sequence.
+          </p>
+        );
+      })()}
 
       <div style={{ ...cardStyle, marginBottom: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
