@@ -30,13 +30,14 @@ const SIGNATURE_HTML = (logoUrl) => `
   Harmony Homecare Agency, LLC &middot; 1852 Burlington Mt-Holly Road, Westampton, NJ 08060
 </div>`;
 
+// Escape HTML entities, linkify URLs. Line breaks are handled by the wrapping
+// <div style="white-space:pre-line"> below — do NOT also inject <br/> tags here,
+// that double-counts every line break and inflates paragraph spacing.
 function textToHtml(text) {
-  // Escape HTML entities, convert newlines to <br>, linkify URLs
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\n/g, "<br/>\n")
     .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" style="color:#1155cc;">$1</a>');
 }
 

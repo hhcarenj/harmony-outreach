@@ -1186,10 +1186,21 @@ function CampaignsTab({ supabase, config }) {
     }
   };
 
+  // {{first_name}} falls back to the organization name (never a blank or a literal
+  // tag) when there's no personal contact name on file — same fallback used by the
+  // automated Sequence A/B emails, so a template reads consistently either way it's sent.
+  const firstNameOf = (name) => {
+    const n = (name || "").trim();
+    return n ? n.split(/\s+/)[0] : "";
+  };
   const personalize = (text, contact) => {
+    const first = firstNameOf(contact.contact_name);
+    const greetingName = first || (contact.agency_name ? `${contact.agency_name} Team` : "there");
     return (text || "")
+      .replace(/\{\{first_name\}\}/g, greetingName)
       .replace(/\{\{agency_name\}\}/g, contact.agency_name || "your agency")
       .replace(/\{\{contact_name\}\}/g, contact.contact_name || "Support Coordinator")
+      .replace(/\{\{visit_date\}\}/g, "recently") // no visit-date field on ad-hoc campaign contacts
       .replace(/\{\{email\}\}/g, contact.email || "");
   };
 
