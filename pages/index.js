@@ -959,6 +959,31 @@ function ContactsTab({ supabase }) {
   );
 }
 
+// ── Template grouping — sequence templates ("Seq A - Step N: ...") are grouped by
+// sequence and sorted chronologically by step; everything else falls into "Other
+// Templates". Grouping is purely organizational — every template is still selected
+// and sent individually, nothing here couples sends together. ──
+const SEQ_TEMPLATE_NAME_RE = /^Seq ([A-Za-z0-9]+) - Step (\d+)/;
+function templateGroupInfo(t) {
+  const m = (t.name || "").match(SEQ_TEMPLATE_NAME_RE);
+  if (m) return { group: `Sequence ${m[1]}`, step: parseInt(m[2], 10), isSequence: true };
+  return { group: "Other Templates", step: 0, isSequence: false };
+}
+function groupTemplates(templates) {
+  const groups = {};
+  templates.forEach((t) => {
+    const info = templateGroupInfo(t);
+    if (!groups[info.group]) groups[info.group] = { isSequence: info.isSequence, items: [] };
+    groups[info.group].items.push({ ...t, __step: info.step });
+  });
+  Object.values(groups).forEach((g) => g.items.sort((a, b) => a.__step - b.__step || a.name.localeCompare(b.name)));
+  // Sequence groups first (alphabetically, so A before B), "Other Templates" always last.
+  return Object.entries(groups).sort(([an, ag], [bn, bg]) => {
+    if (ag.isSequence !== bg.isSequence) return ag.isSequence ? -1 : 1;
+    return an.localeCompare(bn);
+  });
+}
+
 // ── Templates Tab ──
 function TemplatesTab({ supabase }) {
   const [templates, setTemplates] = useState([]);
@@ -1078,17 +1103,29 @@ Harmony Homecare Agency, LLC | 1852 Burlington Mt-Holy Road, Westampton, NJ 0806
         </div>
       )}
 
-      {/* Template list */}
-      {templates.map(t => (
-        <div key={t.id} style={{ ...cardStyle, marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ color: "#e2e8f0", fontWeight: 700, fontSize: 15 }}>{t.name}</div>
-            <div style={{ color: "#64748b", fontSize: 13, marginTop: 2 }}>Subject: {t.subject}</div>
+      {/* Template list — grouped by sequence, chronological within each group. Each
+          template is still edited/deleted/sent individually; grouping is just organization. */}
+      {groupTemplates(templates).map(([groupName, g]) => (
+        <div key={groupName} style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <h3 style={{ color: g.isSequence ? "#a78bfa" : "#64748b", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>{groupName}</h3>
+            <span style={{ color: "#475569", fontSize: 12 }}>({g.items.length})</span>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => { setEditing(t.id); setForm({ name: t.name, subject: t.subject, body: t.body }); setPreview(null); }} style={btnSecondary}>Edit</button>
-            <button onClick={() => deleteTemplate(t.id)} style={{ ...btnSecondary, color: "#f87171", borderColor: "#f8717133" }}>Delete</button>
-          </div>
+          {g.items.map(t => (
+            <div key={t.id} style={{ ...cardStyle, marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ color: "#e2e8f0", fontWeight: 700, fontSize: 15 }}>
+                  {g.isSequence && <span style={{ color: "#6366f1", fontWeight: 700, marginRight: 6 }}>Step {t.__step}</span>}
+                  {t.name}
+                </div>
+                <div style={{ color: "#64748b", fontSize: 13, marginTop: 2 }}>Subject: {t.subject}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => { setEditing(t.id); setForm({ name: t.name, subject: t.subject, body: t.body }); setPreview(null); }} style={btnSecondary}>Edit</button>
+                <button onClick={() => deleteTemplate(t.id)} style={{ ...btnSecondary, color: "#f87171", borderColor: "#f8717133" }}>Delete</button>
+              </div>
+            </div>
+          ))}
         </div>
       ))}
     </div>
@@ -1226,7 +1263,11 @@ function CampaignsTab({ supabase, config }) {
           <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 6 }}>Template</label>
           <select value={selectedTemplate} onChange={e => setSelectedTemplate(e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
             <option value="">Select template...</option>
-            {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            {groupTemplates(templates).map(([groupName, g]) => (
+              <optgroup key={groupName} label={groupName}>
+                {g.items.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </optgroup>
+            ))}
           </select>
         </div>
         <div>
