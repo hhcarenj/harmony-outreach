@@ -7,6 +7,8 @@ import {
   sendDateForStep,
   todayISO,
   renderStep,
+  personalize,
+  sequenceKeyFor,
 } from "../lib/sequenceEmails";
 
 // ── Shared Styles ──
@@ -140,6 +142,7 @@ function stepStatus(seq, step) {
 function SequenceModal({ supabase, seq, onClose, onChange }) {
   const [busy, setBusy] = useState(false);
   const [overrides, setOverrides] = useState({}); // step_number -> { subject, body }
+  const [seqTemplates, setSeqTemplates] = useState({}); // sequence_key -> { subject, body }
   const [previewStep, setPreviewStep] = useState(null);
   const [editStep, setEditStep] = useState(null);
   const [editSubject, setEditSubject] = useState("");
@@ -160,14 +163,41 @@ function SequenceModal({ supabase, seq, onClose, onChange }) {
 
   useEffect(() => { loadOverrides(); }, [loadOverrides]);
 
+  // Load the sequence-linked templates so the preview reflects the DB source of
+  // truth (Templates-tab edits), matching exactly what the cron will send.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("email_templates")
+        .select("sequence_key, subject, body")
+        .not("sequence_key", "is", null);
+      if (cancelled) return;
+      const m = {};
+      (data || []).forEach((r) => { m[r.sequence_key] = { subject: r.subject, body: r.body }; });
+      setSeqTemplates(m);
+    })();
+    return () => { cancelled = true; };
+  }, [supabase]);
+
   if (!seq) return null;
-  const subjects = STEP_SUBJECTS[seq.sequence_type] || [];
   const statusColors = { sent: "#10b981", pending: "#3b82f6", skipped: "#64748b" };
 
+  // Step subject line for the list — from the DB template if loaded, else hardcoded default.
+  const stepSubject = (step) => {
+    const tpl = seqTemplates[sequenceKeyFor(seq.sequence_type, step)];
+    if (tpl) return tpl.subject || "";
+    return (STEP_SUBJECTS[seq.sequence_type] || [])[step - 1] || "";
+  };
+  const subjects = [1, 2, 3, 4, 5].map((n) => stepSubject(n));
+
   // Resolved (override-aware) rendered email for a given step — merge tags filled in.
+  // Priority: per-contact override → email_templates (by sequence_key) → hardcoded default.
   const resolvedStep = (step) => {
     const ov = overrides[step];
     if (ov) return { subject: ov.subject || "", body: ov.body || "" };
+    const tpl = seqTemplates[sequenceKeyFor(seq.sequence_type, step)];
+    if (tpl) return { subject: personalize(tpl.subject, seq), body: personalize(tpl.body, seq) };
     return renderStep(seq, step) || { subject: "", body: "" };
   };
 
@@ -971,7 +1001,21 @@ const SEQUENCE_GROUP_BLURB = {
   "Sequence B": "Auto-sent to new contacts with no visit yet — 5 emails over 23 days, professional & credibility-first tone.",
 };
 const SEQ_TEMPLATE_NAME_RE = /^Seq ([A-Za-z0-9]+) - Step (\d+)/;
+const SEQ_KEY_RE = /^([ab])_step_(\d)$/;
+const SEQ_KEY_LETTER_LABEL = { a: "A", b: "B" };
+
+// Human label for a sequence_key, e.g. "a_step_1" → "Seq A · Step 1". Null if not a sequence key.
+function sequenceKeyLabel(sequence_key) {
+  const m = (sequence_key || "").match(SEQ_KEY_RE);
+  if (!m) return null;
+  return `Seq ${SEQ_KEY_LETTER_LABEL[m[1]]} · Step ${m[2]}`;
+}
+
 function templateGroupInfo(t) {
+  // sequence_key is the authoritative link to an automated sequence step; fall back
+  // to the legacy name convention for any older rows that predate the column.
+  const k = (t.sequence_key || "").match(SEQ_KEY_RE);
+  if (k) return { group: `Sequence ${SEQ_KEY_LETTER_LABEL[k[1]]}`, step: parseInt(k[2], 10), isSequence: true };
   const m = (t.name || "").match(SEQ_TEMPLATE_NAME_RE);
   if (m) return { group: `Sequence ${m[1]}`, step: parseInt(m[2], 10), isSequence: true };
   return { group: "Other Templates", step: 0, isSequence: false };
@@ -1124,9 +1168,19 @@ Harmony Homecare Agency, LLC | 1852 Burlington Mt-Holy Road, Westampton, NJ 0806
           {g.items.map(t => (
             <div key={t.id} style={{ ...cardStyle, marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
-                <div style={{ color: "#e2e8f0", fontWeight: 700, fontSize: 15 }}>
-                  {g.isSequence && <span style={{ color: "#6366f1", fontWeight: 700, marginRight: 6 }}>Step {t.__step}</span>}
-                  {t.name}
+                <div style={{ color: "#e2e8f0", fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span>
+                    {g.isSequence && <span style={{ color: "#6366f1", fontWeight: 700, marginRight: 6 }}>Step {t.__step}</span>}
+                    {t.name}
+                  </span>
+                  {sequenceKeyLabel(t.sequence_key) && (
+                    <span
+                      title="This template is wired to an automated sequence step — editing it changes what the daily cron sends."
+                      style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 9px", borderRadius: 99, fontSize: 11, fontWeight: 700, background: "#a78bfa22", color: "#a78bfa", border: "1px solid #a78bfa44", whiteSpace: "nowrap" }}
+                    >
+                      🔁 {sequenceKeyLabel(t.sequence_key)}
+                    </span>
+                  )}
                 </div>
                 <div style={{ color: "#64748b", fontSize: 13, marginTop: 2 }}>Subject: {t.subject}</div>
               </div>
@@ -1764,6 +1818,21 @@ const TRK_ACTIVITY_ICON = Object.fromEntries(TRK_ACTIVITY_TYPES.map((a) => [a.va
 
 const TRK_OUTCOMES = ["", "positive", "neutral", "no_answer", "left_message", "referral_received", "not_interested"];
 
+// Semantic color for an outcome badge (Feature 2 #3):
+//   positive / referral_received → green · neutral → amber · no_answer / left_message → gray · not_interested → red
+const TRK_OUTCOME_COLOR = {
+  positive: "#22c55e",
+  referral_received: "#22c55e",
+  neutral: "#f59e0b",
+  no_answer: "#6b7280",
+  left_message: "#6b7280",
+  not_interested: "#ef4444",
+};
+const trkOutcomeColor = (o) => TRK_OUTCOME_COLOR[o] || "#64748b";
+
+// Points attributed to a referral_received OUTCOME (mirrors the referral_received activity_type).
+const REFERRAL_OUTCOME_POINTS = 100;
+
 // Priority tiers for the Activity Log, hottest lead first — referral received are connections to
 // maintain, then positive, then neutral, then everything else (coldest — no clear positive signal yet).
 const TRK_OUTCOME_RANK = { referral_received: 0, positive: 1, neutral: 2 };
@@ -1846,6 +1915,7 @@ function TrackerTab({ supabase }) {
   const [expandedOrgs, setExpandedOrgs] = useState(new Set());
   const [confirmDelete, setConfirmDelete] = useState(null); // activity id pending delete confirm
   const [expandedNotes, setExpandedNotes] = useState(new Set());
+  const [editingOutcome, setEditingOutcome] = useState(null); // activity id whose outcome dropdown is open
 
   // Activity log filters + modal
   const [filterType, setFilterType] = useState("all");
@@ -2162,6 +2232,44 @@ function TrackerTab({ supabase }) {
     if (org) await supabase.from("organizations").update({ lead_score: Math.max(0, (org.lead_score || 0) - pts) }).eq("id", org.id);
   };
 
+  // Feature 2 — change an activity's outcome inline, persist immediately, and reconcile
+  // lead_score when the outcome carries points (referral_received = +100). Mirrors the
+  // optimistic pattern used by deleteActivity and the Tracker badge toggles.
+  const updateActivityOutcome = async (a, rawValue) => {
+    setEditingOutcome(null);
+    const newOutcome = rawValue || "";
+    const oldOutcome = a.outcome || "";
+    if (newOutcome === oldOutcome) return;
+
+    // Only the referral_received OUTCOME carries points, and only when the activity_type
+    // isn't already referral_received (that base is already counted in points_awarded) —
+    // this avoids double-counting.
+    let delta = 0;
+    if (a.activity_type !== "referral_received") {
+      const was = oldOutcome === "referral_received" ? REFERRAL_OUTCOME_POINTS : 0;
+      const now = newOutcome === "referral_received" ? REFERRAL_OUTCOME_POINTS : 0;
+      delta = now - was;
+    }
+    const newPoints = Math.max(0, (a.points_awarded || 0) + delta);
+
+    const contact = contacts.find((c) => c.id === a.contact_id);
+    const org = a.organization_id ? organizations.find((o) => o.id === a.organization_id) : null;
+
+    // Optimistic UI
+    setActivities((prev) => prev.map((x) => (x.id === a.id ? { ...x, outcome: newOutcome || null, points_awarded: newPoints } : x)));
+    if (delta !== 0) {
+      if (contact) setContacts((prev) => prev.map((c) => (c.id === contact.id ? { ...c, lead_score: Math.max(0, (c.lead_score || 0) + delta) } : c)));
+      if (org) setOrganizations((prev) => prev.map((o) => (o.id === org.id ? { ...o, lead_score: Math.max(0, (o.lead_score || 0) + delta) } : o)));
+    }
+
+    // Persist
+    await supabase.from("outreach_activities").update({ outcome: newOutcome || null, points_awarded: newPoints }).eq("id", a.id);
+    if (delta !== 0) {
+      if (contact) await supabase.from("sc_contacts").update({ lead_score: Math.max(0, (contact.lead_score || 0) + delta) }).eq("id", contact.id);
+      if (org) await supabase.from("organizations").update({ lead_score: Math.max(0, (org.lead_score || 0) + delta) }).eq("id", org.id);
+    }
+  };
+
   const renderActivityLog = () => {
     const filtered = activities.filter((a) => {
       if (filterType !== "all" && a.activity_type !== filterType) return false;
@@ -2207,7 +2315,36 @@ function TrackerTab({ supabase }) {
                 <span style={{ fontSize: 16 }}>{TRK_ACTIVITY_ICON[a.activity_type] || "•"}</span>
                 <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, minWidth: 160 }}>{org?.name || contact?.agency_name || contact?.contact_name || "—"}</span>
                 <span style={{ color: "#94a3b8", fontSize: 12 }}>{TRK_ACTIVITY_LABEL[a.activity_type] || a.activity_type}</span>
-                {a.outcome && <TrkBadge text={trkPretty(a.outcome)} color={rankColor} />}
+                {editingOutcome === a.id ? (
+                  <select
+                    autoFocus
+                    value={a.outcome || ""}
+                    onChange={(e) => updateActivityOutcome(a, e.target.value)}
+                    onBlur={() => setTimeout(() => setEditingOutcome((cur) => (cur === a.id ? null : cur)), 120)}
+                    style={{ ...inputStyle, width: "auto", padding: "3px 8px", fontSize: 11, cursor: "pointer" }}
+                  >
+                    <option value="">— none —</option>
+                    {TRK_OUTCOMES.filter(Boolean).map((o) => <option key={o} value={o}>{trkPretty(o)}</option>)}
+                  </select>
+                ) : (
+                  <span
+                    onClick={() => setEditingOutcome(a.id)}
+                    title="Click to change outcome"
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 99,
+                      fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", textTransform: "capitalize",
+                      background: (a.outcome ? trkOutcomeColor(a.outcome) : "#64748b") + "22",
+                      color: a.outcome ? trkOutcomeColor(a.outcome) : "#94a3b8",
+                      border: `1px solid ${(a.outcome ? trkOutcomeColor(a.outcome) : "#64748b")}44`,
+                      transition: "filter 0.12s",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.filter = "brightness(1.3)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.filter = "none"; }}
+                  >
+                    {a.outcome ? trkPretty(a.outcome) : "Set outcome"}
+                    <span style={{ fontSize: 9, opacity: 0.7 }}>✎</span>
+                  </span>
+                )}
                 <span style={{ color: "#0ea5e9", fontSize: 11, fontWeight: 700 }}>+{a.points_awarded || 0}</span>
                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
                   {confirmDelete === a.id ? (
