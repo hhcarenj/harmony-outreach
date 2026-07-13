@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { textToHtml } from "../lib/emailHtml";
+import { renderEmailHtml } from "../lib/emailHtml";
 import {
   SEQUENCE_LABEL,
   STEP_SUBJECTS,
@@ -1041,11 +1041,29 @@ const IMAGE_BUCKET = "email-images";
 const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
+// Sample values used to fill {{merge}} tags in template previews (Part 4).
+const SAMPLE_MERGE = {
+  first_name: "Jane",
+  contact_name: "Jane Smith",
+  agency_name: "ABC Support Services",
+  visit_date: "July 10, 2026",
+  email: "jane@abcsupport.org",
+};
+function fillSampleMergeTags(text) {
+  return (text || "")
+    .replace(/\{\{\s*first_name\s*\}\}/gi, SAMPLE_MERGE.first_name)
+    .replace(/\{\{\s*contact_name\s*\}\}/gi, SAMPLE_MERGE.contact_name)
+    .replace(/\{\{\s*agency_name\s*\}\}/gi, SAMPLE_MERGE.agency_name)
+    .replace(/\{\{\s*visit_date\s*\}\}/gi, SAMPLE_MERGE.visit_date)
+    .replace(/\{\{\s*email\s*\}\}/gi, SAMPLE_MERGE.email);
+}
+
 function TemplatesTab({ supabase }) {
   const [templates, setTemplates] = useState([]);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: "", subject: "", body: "" });
   const [preview, setPreview] = useState(null);
+  const [previewTemplate, setPreviewTemplate] = useState(null); // per-row Preview modal (Part 4)
 
   // Image upload + library state
   const [images, setImages] = useState([]);
@@ -1294,11 +1312,12 @@ Harmony Homecare Agency, LLC | 1852 Burlington Mt-Holy Road, Westampton, NJ 0806
             <button onClick={() => setPreview(null)} style={{ ...btnSecondary, padding: "4px 10px", fontSize: 12 }}>✕</button>
           </div>
           <p style={{ color: "#64748b", fontSize: 12, marginBottom: 8 }}>Subject: <span style={{ color: "#e2e8f0" }}>{preview.subject}</span></p>
-          {/* Rendered the same way the email is built (textToHtml + white-space:pre-line),
-              so embedded <img> tags preview as real images. */}
-          <div
-            style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-line" }}
-            dangerouslySetInnerHTML={{ __html: textToHtml(preview.body) }}
+          {/* Rendered through the exact renderEmailHtml used on send, inside an iframe
+              so embedded <img> tags and HTML preview precisely as the email will look. */}
+          <iframe
+            title="Template preview"
+            srcDoc={renderEmailHtml(preview.body)}
+            style={{ width: "100%", height: "50vh", border: "1px solid #1e293b", borderRadius: 8, background: "#fff" }}
           />
         </div>
       )}
@@ -1334,6 +1353,7 @@ Harmony Homecare Agency, LLC | 1852 Burlington Mt-Holy Road, Westampton, NJ 0806
                 <div style={{ color: "#64748b", fontSize: 13, marginTop: 2 }}>Subject: {t.subject}</div>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setPreviewTemplate(t)} style={btnSecondary}>👁 Preview</button>
                 <button onClick={() => { setEditing(t.id); setForm({ name: t.name, subject: t.subject, body: t.body }); setPreview(null); }} style={btnSecondary}>Edit</button>
                 <button onClick={() => deleteTemplate(t.id)} style={{ ...btnSecondary, color: "#f87171", borderColor: "#f8717133" }}>Delete</button>
               </div>
@@ -1341,6 +1361,29 @@ Harmony Homecare Agency, LLC | 1852 Burlington Mt-Holy Road, Westampton, NJ 0806
           ))}
         </div>
       ))}
+
+      {/* Part 4 — per-template email preview modal. Renders the body through the exact
+          renderEmailHtml used on send, inside an iframe, with merge tags filled by sample data. */}
+      {previewTemplate && (
+        <div onClick={() => setPreviewTemplate(null)} style={{ position: "fixed", inset: 0, background: "rgba(2,6,23,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ ...cardStyle, maxWidth: 680, width: "100%", maxHeight: "88vh", overflow: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8, gap: 12 }}>
+              <div style={{ minWidth: 0 }}>
+                <h3 style={{ color: "#f1f5f9", fontSize: 16, margin: 0 }}>Email Preview</h3>
+                <p style={{ color: "#64748b", fontSize: 12, margin: "4px 0 0" }}>{previewTemplate.name}</p>
+              </div>
+              <button onClick={() => setPreviewTemplate(null)} style={{ ...btnSecondary, padding: "4px 10px", fontSize: 12 }}>✕</button>
+            </div>
+            <p style={{ color: "#64748b", fontSize: 12, margin: "0 0 4px" }}>Subject: <span style={{ color: "#e2e8f0" }}>{fillSampleMergeTags(previewTemplate.subject)}</span></p>
+            <p style={{ color: "#475569", fontSize: 11, margin: "0 0 10px" }}>Merge tags filled with sample data · signature/footer is added automatically on send.</p>
+            <iframe
+              title="Email preview"
+              srcDoc={renderEmailHtml(fillSampleMergeTags(previewTemplate.body))}
+              style={{ width: "100%", height: "60vh", border: "1px solid #1e293b", borderRadius: 8, background: "#fff" }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -9,7 +9,15 @@
  * Default: uses the deployed app's /logo.png (place your logo in the public/ folder).
  */
 
-import { textToHtml } from "../../lib/emailHtml";
+import { renderEmailHtml, renderEmailText } from "../../lib/emailHtml";
+
+// Plain-text fallback footer (mirrors the HTML signature for non-HTML mail clients).
+const PLAIN_FOOTER = `Nate Ojugo (Admin Manager)
+(609) 755-5593 | hhcare.nj@gmail.com | https://harmonycarenj.org/
+Empowering Lives, Embracing Potential
+
+To unsubscribe from future emails, reply with "unsubscribe" in the subject line.
+Harmony Homecare Agency, LLC · 1852 Burlington Mt-Holly Road, Westampton, NJ 08060`;
 
 const SIGNATURE_HTML = (logoUrl) => `
 <div style="margin-top:28px; padding-top:16px; border-top:1px solid #ddd; font-family:Arial,Helvetica,sans-serif;">
@@ -53,17 +61,10 @@ export default async function handler(req, res) {
   const logoUrl = process.env.LOGO_URL
     || (appUrl ? `https://${appUrl.replace(/^https?:\/\//, "")}/logo.png` : "");
 
-  // Convert plain text body to styled HTML with signature
-  const htmlBody = `
-<!DOCTYPE html>
-<html>
-<body style="font-family:Arial,Helvetica,sans-serif; font-size:14px; color:#333; line-height:1.6; max-width:600px;">
-  <div style="white-space:pre-line;">
-${textToHtml(text)}
-  </div>
-  ${SIGNATURE_HTML(logoUrl)}
-</body>
-</html>`;
+  // Render body → email-safe HTML (preserves embedded <img>/HTML), plus a plain-text
+  // fallback. Signature + CAN-SPAM footer are appended inside the HTML container.
+  const html = renderEmailHtml(text, { footerHtml: SIGNATURE_HTML(logoUrl) });
+  const plainText = renderEmailText(text, PLAIN_FOOTER);
 
   try {
     const response = await fetch("https://api.resend.com/emails", {
@@ -76,7 +77,8 @@ ${textToHtml(text)}
         from,
         to: [to],
         subject,
-        html: htmlBody,
+        html,
+        text: plainText,
       }),
     });
 
