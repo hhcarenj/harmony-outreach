@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { textToHtml } from "../lib/emailHtml";
 import {
   SEQUENCE_LABEL,
   STEP_SUBJECTS,
@@ -1036,18 +1037,108 @@ function groupTemplates(templates) {
 }
 
 // ── Templates Tab ──
+const IMAGE_BUCKET = "email-images";
+const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
 function TemplatesTab({ supabase }) {
   const [templates, setTemplates] = useState([]);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: "", subject: "", body: "" });
   const [preview, setPreview] = useState(null);
 
+  // Image upload + library state
+  const [images, setImages] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState(null); // { url, name } of the most recent upload
+  const [copiedUrl, setCopiedUrl] = useState(null);
+  const fileInputRef = useRef(null);
+  const bodyRef = useRef(null); // textarea, for cursor-position insertion
+
   const load = useCallback(async () => {
     const { data } = await supabase.from("email_templates").select("*");
     setTemplates(data || []);
   }, [supabase]);
 
+  const publicUrlFor = useCallback(
+    (name) => supabase.storage.from(IMAGE_BUCKET).getPublicUrl(name).data.publicUrl,
+    [supabase]
+  );
+
+  const loadImages = useCallback(async () => {
+    const { data, error } = await supabase.storage
+      .from(IMAGE_BUCKET)
+      .list("", { limit: 100, sortBy: { column: "created_at", order: "desc" } });
+    if (error) { console.error("[images] list failed:", error.message); return; }
+    const files = (data || []).filter((f) => f.name && !f.name.startsWith(".")); // drop folder placeholders
+    setImages(files.map((f) => ({ name: f.name, url: publicUrlFor(f.name) })));
+  }, [supabase, publicUrlFor]);
+
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadImages(); }, [loadImages]);
+
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (e.target) e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      alert("Only PNG, JPG, GIF, or WEBP images are allowed.");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      alert("Image must be under 5MB.");
+      return;
+    }
+    setUploading(true);
+    // Timestamp prefix keeps filenames unique so uploads never collide.
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const path = `${Date.now()}-${safeName}`;
+    const { error } = await supabase.storage
+      .from(IMAGE_BUCKET)
+      .upload(path, file, { contentType: file.type, upsert: false });
+    setUploading(false);
+    if (error) { alert("Upload failed: " + error.message); return; }
+    const url = publicUrlFor(path);
+    setUploadMsg({ url, name: path });
+    loadImages();
+  };
+
+  // Insert an <img> tag at the textarea cursor (or append to the bottom).
+  const insertImage = (url) => {
+    const tag = `<img src="${url}" alt="Harmony Homecare" style="max-width: 100%; height: auto; display: block; margin: 10px 0;" />`;
+    const el = bodyRef.current;
+    if (el && typeof el.selectionStart === "number") {
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const b = form.body || "";
+      const next = b.slice(0, start) + tag + b.slice(end);
+      setForm((f) => ({ ...f, body: next }));
+      // Restore the caret just after the inserted tag once React re-renders.
+      requestAnimationFrame(() => {
+        try { el.focus(); const pos = start + tag.length; el.setSelectionRange(pos, pos); } catch { /* noop */ }
+      });
+    } else {
+      setForm((f) => ({ ...f, body: (f.body ? f.body + "\n" : "") + tag }));
+    }
+  };
+
+  const copyUrl = async (url) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedUrl(url);
+      setTimeout(() => setCopiedUrl((c) => (c === url ? null : c)), 1500);
+    } catch {
+      window.prompt("Copy this image URL:", url);
+    }
+  };
+
+  const deleteImage = async (name) => {
+    if (!confirm("Delete this image? Emails that already reference it will show a broken image.")) return;
+    const { error } = await supabase.storage.from(IMAGE_BUCKET).remove([name]);
+    if (error) { alert("Delete failed: " + error.message); return; }
+    setImages((prev) => prev.filter((i) => i.name !== name));
+    setUploadMsg((m) => (m && m.name === name ? null : m));
+  };
 
   const save = async () => {
     if (!form.name || !form.subject || !form.body) return;
@@ -1133,12 +1224,65 @@ Harmony Homecare Agency, LLC | 1852 Burlington Mt-Holy Road, Westampton, NJ 0806
           </div>
         </div>
         <label style={{ color: "#94a3b8", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 4 }}>Body</label>
-        <p style={{ color: "#475569", fontSize: 11, marginBottom: 8 }}>Use {"{{"+"agency_name"+"}}"}, {"{{"+"contact_name"+"}}"}, {"{{"+"email"+"}}"} for personalization</p>
-        <textarea value={form.body} onChange={e => setForm({ ...form, body: e.target.value })} rows={14} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.6 }} />
-        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <p style={{ color: "#475569", fontSize: 11, marginBottom: 8 }}>Use {"{{"+"agency_name"+"}}"}, {"{{"+"contact_name"+"}}"}, {"{{"+"email"+"}}"} for personalization · embedded {"<img>"} tags render in the sent email</p>
+        <textarea
+          ref={bodyRef}
+          value={form.body}
+          onChange={e => setForm({ ...form, body: e.target.value })}
+          rows={14}
+          style={{ ...inputStyle, resize: "vertical", lineHeight: 1.6, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", minHeight: /<[a-z][^>]*>/i.test(form.body) ? 400 : undefined }}
+        />
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
           <button onClick={save} style={btnPrimary}>{editing ? "Update" : "Save"} Template</button>
           {form.body && <button onClick={() => samplePreview(form.body, form.subject)} style={btnSecondary}>👁 Preview</button>}
           {editing && <button onClick={() => { setEditing(null); setForm({ name: "", subject: "", body: "" }); setPreview(null); }} style={btnSecondary}>Cancel</button>}
+        </div>
+
+        {/* ── Image upload + library ── */}
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid #1e293b" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" onChange={handleFileSelect} style={{ display: "none" }} />
+            <button onClick={() => fileInputRef.current?.click()} disabled={uploading} style={{ ...btnSecondary, opacity: uploading ? 0.6 : 1 }}>
+              {uploading ? "Uploading…" : "🖼 Upload Image"}
+            </button>
+            <span style={{ color: "#475569", fontSize: 11 }}>PNG, JPG, GIF or WEBP · max 5MB · hosted on Supabase Storage</span>
+          </div>
+
+          {uploadMsg && (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12, padding: 10, background: "#0f172a", borderRadius: 8, border: "1px solid #22c55e33" }}>
+              <img src={uploadMsg.url} alt="" style={{ width: 48, height: 48, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ color: "#22c55e", fontSize: 12, fontWeight: 700 }}>Uploaded ✓</div>
+                <div style={{ color: "#64748b", fontSize: 11, wordBreak: "break-all" }}>{uploadMsg.url}</div>
+              </div>
+              <button onClick={() => insertImage(uploadMsg.url)} style={{ ...btnPrimary, padding: "6px 12px", fontSize: 12, whiteSpace: "nowrap" }}>Insert into Template</button>
+            </div>
+          )}
+
+          <div style={{ marginTop: 16 }}>
+            <div style={{ color: "#94a3b8", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>Image Library ({images.length})</div>
+            {images.length === 0 ? (
+              <p style={{ color: "#475569", fontSize: 12, margin: 0 }}>No images uploaded yet. Use “Upload Image” above to add one.</p>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 12 }}>
+                {images.map((img) => (
+                  <div key={img.name} style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, overflow: "hidden" }}>
+                    <div style={{ height: 100, background: "#0b1220", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                      <img src={img.url} alt={img.name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                    </div>
+                    <div style={{ padding: 8 }}>
+                      <div title={img.name} style={{ color: "#64748b", fontSize: 10, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginBottom: 6 }}>{img.name}</div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        <button onClick={() => insertImage(img.url)} style={{ ...btnPrimary, padding: "4px 8px", fontSize: 10, flex: "1 1 auto" }}>Insert</button>
+                        <button onClick={() => copyUrl(img.url)} style={{ ...btnSecondary, padding: "4px 8px", fontSize: 10 }}>{copiedUrl === img.url ? "Copied!" : "Copy URL"}</button>
+                        <button onClick={() => deleteImage(img.name)} style={{ ...btnSecondary, padding: "4px 8px", fontSize: 10, color: "#f87171", borderColor: "#f8717133" }}>Delete</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1150,7 +1294,12 @@ Harmony Homecare Agency, LLC | 1852 Burlington Mt-Holy Road, Westampton, NJ 0806
             <button onClick={() => setPreview(null)} style={{ ...btnSecondary, padding: "4px 10px", fontSize: 12 }}>✕</button>
           </div>
           <p style={{ color: "#64748b", fontSize: 12, marginBottom: 8 }}>Subject: <span style={{ color: "#e2e8f0" }}>{preview.subject}</span></p>
-          <pre style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{preview.body}</pre>
+          {/* Rendered the same way the email is built (textToHtml + white-space:pre-line),
+              so embedded <img> tags preview as real images. */}
+          <div
+            style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-line" }}
+            dangerouslySetInnerHTML={{ __html: textToHtml(preview.body) }}
+          />
         </div>
       )}
 

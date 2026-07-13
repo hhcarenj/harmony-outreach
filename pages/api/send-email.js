@@ -9,6 +9,8 @@
  * Default: uses the deployed app's /logo.png (place your logo in the public/ folder).
  */
 
+import { textToHtml } from "../../lib/emailHtml";
+
 const SIGNATURE_HTML = (logoUrl) => `
 <div style="margin-top:28px; padding-top:16px; border-top:1px solid #ddd; font-family:Arial,Helvetica,sans-serif;">
   <p style="margin:0 0 2px 0; font-size:15px; line-height:1.4;">
@@ -29,17 +31,6 @@ const SIGNATURE_HTML = (logoUrl) => `
   To unsubscribe from future emails, reply with &ldquo;unsubscribe&rdquo; in the subject line.<br/>
   Harmony Homecare Agency, LLC &middot; 1852 Burlington Mt-Holly Road, Westampton, NJ 08060
 </div>`;
-
-// Escape HTML entities, linkify URLs. Line breaks are handled by the wrapping
-// <div style="white-space:pre-line"> below — do NOT also inject <br/> tags here,
-// that double-counts every line break and inflates paragraph spacing.
-function textToHtml(text) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" style="color:#1155cc;">$1</a>');
-}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
