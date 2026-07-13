@@ -671,7 +671,11 @@ function ContactsTab({ supabase }) {
 
   const deleteContact = async (id) => {
     if (!confirm("Delete this contact permanently?")) return;
-    await supabase.from("sc_contacts").delete().eq("id", id);
+    const { error } = await supabase.from("sc_contacts").delete().eq("id", id);
+    if (error) {
+      alert("Couldn't delete this contact: " + error.message);
+      return;
+    }
     if (editingContact === id) cancelEdit();
     load();
   };
