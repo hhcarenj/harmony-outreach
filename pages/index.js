@@ -2112,6 +2112,11 @@ function TrackerTab({ supabase }) {
   const [confirmDelete, setConfirmDelete] = useState(null); // activity id pending delete confirm
   const [expandedNotes, setExpandedNotes] = useState(new Set());
   const [editingOutcome, setEditingOutcome] = useState(null); // activity id whose outcome dropdown is open
+  const [editingNote, setEditingNote] = useState(null); // activity id whose note is being edited inline
+  const [noteDraft, setNoteDraft] = useState("");
+  const [sequences, setSequences] = useState([]); // all email_sequences rows (same source as the Contacts page)
+  const [modalSeq, setModalSeq] = useState(null); // sequence row open in the detail modal
+  const [showQueue, setShowQueue] = useState(true);
 
   // Activity log filters + modal
   const [filterType, setFilterType] = useState("all");
@@ -2130,16 +2135,18 @@ function TrackerTab({ supabase }) {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [c, o, a, t] = await Promise.all([
+    const [c, o, a, t, s] = await Promise.all([
       supabase.from("sc_contacts").select("*"),
       supabase.from("organizations").select("*"),
       supabase.from("outreach_activities").select("*").order("activity_date", { ascending: false }),
       supabase.from("followup_tasks").select("*").order("due_date", { ascending: true }),
+      supabase.from("email_sequences").select("*").order("created_at", { ascending: false }),
     ]);
     setContacts(c.data || []);
     setOrganizations(o.data || []);
     setActivities(a.data || []);
     setTasks(t.data || []);
+    setSequences(s.data || []);
     setLoading(false);
   }, [supabase]);
 
@@ -2410,6 +2417,20 @@ function TrackerTab({ supabase }) {
 
   const toggleNote = (id) => setExpandedNotes((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
+  // Begin editing an activity's note (prefill the draft with the current note).
+  const startEditNote = (a) => { setEditingNote(a.id); setNoteDraft(a.notes || ""); };
+  const cancelEditNote = () => { setEditingNote(null); setNoteDraft(""); };
+
+  // Save an edited note to outreach_activities (optimistic; empty clears the note).
+  const saveNote = async (a) => {
+    const next = noteDraft.trim() ? noteDraft.trim() : null;
+    setActivities((prev) => prev.map((x) => (x.id === a.id ? { ...x, notes: next } : x)));
+    setEditingNote(null);
+    setNoteDraft("");
+    const { error } = await supabase.from("outreach_activities").update({ notes: next }).eq("id", a.id);
+    if (error) { alert("Couldn't save note: " + error.message); loadAll(); }
+  };
+
   // Fix 1 + Fix 3 — delete an activity, reverse its awarded points, update totals optimistically.
   const deleteActivity = async (a) => {
     const pts = a.points_awarded || 0;
@@ -2466,6 +2487,47 @@ function TrackerTab({ supabase }) {
     }
   };
 
+  // Sequence queue — same source + latest-per-contact logic the Contacts page uses,
+  // so the two views always agree. Only currently-running sequences (active/paused)
+  // count as "in a sequence."
+  const latestSeqByContact = {};
+  sequences.forEach((s) => { if (!latestSeqByContact[s.contact_id]) latestSeqByContact[s.contact_id] = s; });
+  const sequenceQueue = Object.values(latestSeqByContact)
+    .filter((s) => s.status === "active" || s.status === "paused")
+    .sort((a, b) => (a.agency_name || "").localeCompare(b.agency_name || ""));
+
+  const renderSequenceQueue = () => (
+    <div style={{ ...cardStyle, marginBottom: 16, padding: "12px 16px" }}>
+      <div
+        onClick={() => setShowQueue((v) => !v)}
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>🔁 In Sequence</span>
+          <span style={{ color: "#475569", fontSize: 12 }}>({sequenceQueue.length})</span>
+        </div>
+        <span style={{ color: "#64748b", fontSize: 12 }}>{showQueue ? "▾ hide" : "▸ show"}</span>
+      </div>
+      {showQueue && (
+        sequenceQueue.length === 0 ? (
+          <p style={{ color: "#475569", fontSize: 12, margin: "10px 0 0" }}>No companies are currently in an active sequence.</p>
+        ) : (
+          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 8 }}>
+            {sequenceQueue.map((s) => (
+              <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: "#0f172a", borderRadius: 8, border: "1px solid #1e293b" }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.agency_name || "—"}</div>
+                  {s.contact_name && <div style={{ color: "#64748b", fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.contact_name}</div>}
+                </div>
+                <SequencePill seq={s} onClick={() => setModalSeq(s)} />
+              </div>
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
+
   const renderActivityLog = () => {
     const filtered = activities.filter((a) => {
       if (filterType !== "all" && a.activity_type !== filterType) return false;
@@ -2485,6 +2547,7 @@ function TrackerTab({ supabase }) {
     });
     return (
       <div>
+        {renderSequenceQueue()}
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
           <select value={filterType} onChange={(e) => setFilterType(e.target.value)} style={{ ...inputStyle, width: "auto", cursor: "pointer" }}>
             <option value="all">All types</option>
@@ -2554,7 +2617,27 @@ function TrackerTab({ supabase }) {
                   )}
                 </div>
               </div>
-              {a.notes && (
+              {editingNote === a.id ? (
+                <div style={{ marginTop: 8 }}>
+                  <textarea
+                    autoFocus
+                    value={noteDraft}
+                    onChange={(e) => setNoteDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveNote(a);
+                      if (e.key === "Escape") cancelEditNote();
+                    }}
+                    rows={3}
+                    placeholder="Add a note…"
+                    style={{ ...inputStyle, width: "100%", resize: "vertical", fontSize: 12, lineHeight: 1.5 }}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
+                    <button onClick={() => saveNote(a)} style={{ ...btnPrimary, padding: "4px 12px", fontSize: 12 }}>Save</button>
+                    <button onClick={cancelEditNote} style={{ ...btnSecondary, padding: "4px 12px", fontSize: 12 }}>Cancel</button>
+                    <span style={{ color: "#475569", fontSize: 11 }}>⌘/Ctrl+Enter to save · Esc to cancel</span>
+                  </div>
+                </div>
+              ) : a.notes ? (
                 <div style={{ color: "#64748b", fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>
                   {(!longNote || noteOpen) ? a.notes : `${a.notes.slice(0, 60)}… `}
                   {longNote && (
@@ -2562,7 +2645,10 @@ function TrackerTab({ supabase }) {
                       {noteOpen ? "Show less" : "Show more"}
                     </span>
                   )}
+                  <span onClick={() => startEditNote(a)} title="Edit note" style={{ color: "#6366f1", cursor: "pointer", fontWeight: 600, marginLeft: 8 }}>✎ Edit</span>
                 </div>
+              ) : (
+                <button onClick={() => startEditNote(a)} style={{ background: "none", border: "none", color: "#475569", fontSize: 12, cursor: "pointer", padding: "6px 0 0", fontWeight: 600 }}>+ Add note</button>
               )}
               {(() => {
                 const subtasks = tasks.filter((t) => t.activity_id === a.id);
@@ -2715,6 +2801,8 @@ function TrackerTab({ supabase }) {
           </div>
         </div>
       ), () => { setShowLogModal(false); setLogForm(emptyLog); setLogSearch(""); })}
+
+      {modalSeq && <SequenceModal supabase={supabase} seq={modalSeq} onClose={() => setModalSeq(null)} onChange={loadAll} />}
     </div>
   );
 }
