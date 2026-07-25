@@ -2792,7 +2792,12 @@ export default function App() {
   const [config, setConfig] = useState(autoConfig);
   const [configured, setConfigured] = useState(!!(ENV_URL && ENV_KEY));
   const [activeTab, setActiveTab] = useState("contacts");
-  const [supabase, setSupabase] = useState(
+  // LAZY initializer (note the arrow function). Without it, createClient() runs on
+  // EVERY render — React throws the value away after the first, but each call still
+  // constructs a GoTrueClient with its own token-refresh timer and storage
+  // listener, all fighting over the same auth-token key. That leaks a client per
+  // render and produces "Multiple GoTrueClient instances detected" warnings.
+  const [supabase, setSupabase] = useState(() =>
     ENV_URL && ENV_KEY ? createClient(ENV_URL, ENV_KEY) : null
   );
   // ── Auth gate ──
