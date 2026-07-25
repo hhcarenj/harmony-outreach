@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { renderEmailHtml } from "../lib/emailHtml";
+import { cardStyle, inputStyle, btnPrimary, btnSecondary, pillStyle, Toast, LoginPanel } from "../components/ui";
+import CareManagementTab from "../components/CareManagementTab";
+import { complianceAlertCount } from "../lib/compliance";
 import {
   SEQUENCE_LABEL,
   STEP_SUBJECTS,
@@ -11,59 +14,6 @@ import {
   personalize,
   sequenceKeyFor,
 } from "../lib/sequenceEmails";
-
-// ── Shared Styles ──
-const cardStyle = {
-  background: "#111827",
-  border: "1px solid #1e293b",
-  borderRadius: 14,
-  padding: 24,
-};
-const inputStyle = {
-  width: "100%",
-  background: "#0f172a",
-  border: "1px solid #1e293b",
-  borderRadius: 8,
-  padding: "10px 14px",
-  color: "#e2e8f0",
-  fontSize: 14,
-  outline: "none",
-  boxSizing: "border-box",
-};
-const btnPrimary = {
-  padding: "10px 24px",
-  background: "linear-gradient(135deg, #6366f1, #0ea5e9)",
-  color: "#fff",
-  border: "none",
-  borderRadius: 8,
-  fontSize: 14,
-  fontWeight: 700,
-  cursor: "pointer",
-};
-const btnSecondary = {
-  padding: "10px 24px",
-  background: "#1e293b",
-  color: "#e2e8f0",
-  border: "1px solid #334155",
-  borderRadius: 8,
-  fontSize: 14,
-  fontWeight: 600,
-  cursor: "pointer",
-};
-const pillStyle = (active) => ({
-  padding: "8px 18px",
-  borderRadius: 99,
-  border: "none",
-  cursor: "pointer",
-  fontSize: 13,
-  fontWeight: 600,
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  background: active ? "linear-gradient(135deg, #6366f1, #0ea5e9)" : "transparent",
-  color: active ? "#fff" : "#94a3b8",
-  transition: "all 0.25s",
-});
 
 // ── Email Sequence helpers & UI ──
 // Creates an active sequence row for a contact. type = 'post_visit' (A) | 'cold_outreach' (B).
@@ -338,15 +288,6 @@ function SequenceModal({ supabase, seq, onClose, onChange }) {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function Toast({ message }) {
-  if (!message) return null;
-  return (
-    <div style={{ position: "fixed", bottom: 24, right: 24, background: "#111827", border: "1px solid #6366f1", borderRadius: 10, padding: "14px 20px", color: "#e2e8f0", fontSize: 14, fontWeight: 600, boxShadow: "0 10px 30px rgba(0,0,0,0.4)", zIndex: 1100, maxWidth: 360 }}>
-      ✨ {message}
     </div>
   );
 }
@@ -1805,9 +1746,18 @@ function SequencesTab({ supabase }) {
     setRunning(true);
     setRunResult(null);
     try {
+      // Prove who's asking: this endpoint sends real email, so it takes the
+      // signed-in staff member's Supabase token (verified + allowlisted server
+      // side) rather than a header anyone could copy.
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setRunResult({ error: "Your session expired — sign in again." });
+        setRunning(false);
+        return;
+      }
       const res = await fetch("/api/cron/sequence-runner", {
         method: "POST",
-        headers: { "x-manual-trigger": "1" },
+        headers: { Authorization: `Bearer ${session.access_token}` },
       });
       const data = await res.json();
       setRunResult(data);
@@ -2814,6 +2764,7 @@ const TABS = [
   { id: "campaigns", label: "Campaigns", icon: "🚀" },
   { id: "sequences", label: "Sequences", icon: "🔁" },
   { id: "tracker", label: "Tracker", icon: "🎯" },
+  { id: "care", label: "Care Management", icon: "🏠" },
   { id: "sent", label: "Sent Log", icon: "📬" },
   { id: "setup", label: "DB Setup", icon: "⚙️" },
 ];
@@ -2832,6 +2783,41 @@ export default function App() {
   const [supabase, setSupabase] = useState(
     ENV_URL && ENV_KEY ? createClient(ENV_URL, ENV_KEY) : null
   );
+  // ── Auth gate ──
+  // The CRM tables are authenticated-only, so the dashboard is useless (and empty)
+  // without a session. `authReady` avoids flashing the login screen while the
+  // stored session is being restored from localStorage.
+  const [session, setSession] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  useEffect(() => {
+    if (!supabase) { setAuthReady(true); return; }
+    let cancelled = false;
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      setSession(data?.session || null);
+      setAuthReady(true);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, s) => {
+      if (!cancelled) setSession(s);
+    });
+    return () => { cancelled = true; listener?.subscription?.unsubscribe(); };
+  }, [supabase]);
+
+  // DSP compliance alert count for the Care Management tab badge. Fetched here so
+  // the badge is visible without having to open the tab first; the tab itself
+  // pushes a fresh count back up whenever a DSP is edited.
+  const [careAlerts, setCareAlerts] = useState(0);
+
+  useEffect(() => {
+    if (!supabase || !session) { setCareAlerts(0); return; }
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase.from("dsps").select("*");
+      if (!cancelled && !error) setCareAlerts(complianceAlertCount(data || []));
+    })();
+    return () => { cancelled = true; };
+  }, [supabase, session]);
 
   const handleSave = (cfg) => {
     const client = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
@@ -2841,6 +2827,18 @@ export default function App() {
 
   if (!configured || !supabase) {
     return <ConfigPanel config={config} setConfig={setConfig} onSave={handleSave} />;
+  }
+
+  if (!authReady) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#0a0f1a", display: "flex", alignItems: "center", justifyContent: "center", color: "#64748b", fontFamily: "'DM Sans', sans-serif", fontSize: 14 }}>
+        ⏳ Loading…
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <LoginPanel supabase={supabase} />;
   }
 
   return (
@@ -2859,12 +2857,25 @@ export default function App() {
             <button key={t.id} onClick={() => setActiveTab(t.id)} style={pillStyle(activeTab === t.id)}>
               <span>{t.icon}</span>
               <span>{t.label}</span>
+              {t.id === "care" && careAlerts > 0 && (
+                <span
+                  title={`${careAlerts} DSP compliance item${careAlerts === 1 ? "" : "s"} need attention`}
+                  style={{ background: "#f59e0b", color: "#0a0f1a", borderRadius: 99, fontSize: 10, fontWeight: 800, padding: "1px 7px", lineHeight: 1.6 }}
+                >
+                  {careAlerts}
+                </span>
+              )}
             </button>
           ))}
         </div>
-        <button onClick={() => { setConfigured(false); setSupabase(null); setConfig({}); }} style={{ ...btnSecondary, padding: "6px 14px", fontSize: 12 }}>
-          ⚙️ Settings
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span title={session.user?.email} style={{ color: "#475569", fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {session.user?.email}
+          </span>
+          <button onClick={() => supabase.auth.signOut()} style={{ ...btnSecondary, padding: "6px 14px", fontSize: 12 }}>
+            Sign Out
+          </button>
+        </div>
       </div>
 
       {/* Content */}
@@ -2874,6 +2885,7 @@ export default function App() {
         {activeTab === "campaigns" && <CampaignsTab supabase={supabase} config={config} />}
         {activeTab === "sequences" && <SequencesTab supabase={supabase} />}
         {activeTab === "tracker" && <TrackerTab supabase={supabase} />}
+        {activeTab === "care" && <CareManagementTab supabase={supabase} onAlertCount={setCareAlerts} />}
         {activeTab === "sent" && <SentTab supabase={supabase} />}
         {activeTab === "setup" && <SetupTab />}
       </div>

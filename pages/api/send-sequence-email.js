@@ -6,8 +6,8 @@
  * Keeps the Resend API key server-side. The sequence's current_step is sent,
  * logged to sent_emails, and the row is advanced (or completed).
  */
-import { createClient } from "@supabase/supabase-js";
 import { processOne } from "../../lib/sequenceRunner";
+import { serverSupabase } from "../../lib/supabaseServer";
 
 const FROM_EMAIL = process.env.FROM_EMAIL || "outreach@harmonycarenj.org";
 
@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "RESEND_API_KEY is not configured on the server." });
   }
 
-  const supabase = createClient(supabaseUrl, supabaseKey);
+  const supabase = serverSupabase();
 
   const { data: seq, error } = await supabase
     .from("email_sequences")

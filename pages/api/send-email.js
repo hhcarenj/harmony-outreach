@@ -5,11 +5,11 @@
  * - Auto-appends the Harmony Homecare branded signature
  * - RESEND_API_KEY is read from server environment only
  *
- * The LOGO_URL env var is optional. If set, the signature includes the logo image.
- * Default: uses the deployed app's /logo.png (place your logo in the public/ folder).
+ * The LOGO_URL env var is optional and overrides the default, which is the copy
+ * in public Supabase Storage (see resolveLogoUrl in lib/emailHtml.js).
  */
 
-import { renderEmailHtml, renderEmailText, resolveAppBaseUrl } from "../../lib/emailHtml";
+import { renderEmailHtml, renderEmailText, resolveLogoUrl } from "../../lib/emailHtml";
 
 // Plain-text fallback footer (mirrors the HTML signature for non-HTML mail clients).
 const PLAIN_FOOTER = `Nate Ojugo (Admin Manager)
@@ -56,10 +56,9 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "RESEND_API_KEY is not configured on the server. Add it in Vercel → Settings → Environment Variables." });
   }
 
-  // Build the logo URL — explicit env var first, else the stable production domain's
-  // /logo.png (NOT process.env.VERCEL_URL, which is deployment-specific and gated
-  // behind Vercel SSO for every URL except the production alias).
-  const logoUrl = process.env.LOGO_URL || `${resolveAppBaseUrl()}/logo.png`;
+  // Logo comes from public Supabase Storage, not this (access-controlled) app —
+  // see resolveLogoUrl for why.
+  const logoUrl = resolveLogoUrl();
 
   // Render body → email-safe HTML (preserves embedded <img>/HTML), plus a plain-text
   // fallback. Signature + CAN-SPAM footer are appended inside the HTML container.

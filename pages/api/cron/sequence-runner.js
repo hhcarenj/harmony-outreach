@@ -7,27 +7,21 @@
  *   3. Logs each send to sent_emails
  *   4. Advances current_step / next_send_date (or marks the sequence completed)
  *
- * Auth:
- *   - Vercel Cron sends `Authorization: Bearer <CRON_SECRET>`.
- *   - The dashboard "Run sequence check" button sends `x-manual-trigger: 1`
- *     (RLS is already fully open on this project, so this matches its trust model).
+ * Auth: see lib/apiAuth.js — Vercel Cron's CRON_SECRET, or a signed-in staff
+ * member's Supabase token. Fails closed.
  *
- * Env: RESEND_API_KEY, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
- *      CRON_SECRET (optional), FROM_EMAIL (optional)
+ * Env: RESEND_API_KEY, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+ *      CRON_SECRET (REQUIRED — scheduled runs 401 without it), FROM_EMAIL (optional)
  */
-import { createClient } from "@supabase/supabase-js";
 import { runDueSequences } from "../../../lib/sequenceRunner";
+import { serverSupabase } from "../../../lib/supabaseServer";
+import { authorizeJob } from "../../../lib/apiAuth";
 
 const FROM_EMAIL = process.env.FROM_EMAIL || "outreach@harmonycarenj.org";
 
 export default async function handler(req, res) {
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = req.headers["authorization"];
-  const isManual = req.headers["x-manual-trigger"] === "1";
-
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}` && !isManual) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  const auth = await authorizeJob(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -39,7 +33,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const supabase = createClient(supabaseUrl, supabaseKey);
+  const supabase = serverSupabase();
 
   try {
     const summary = await runDueSequences({ supabase, resendKey, from: FROM_EMAIL });

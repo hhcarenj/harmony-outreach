@@ -24,19 +24,41 @@ Automate outreach to NJ DDD Support Coordinators (SCs) — the primary referral 
 | `RESEND_API_KEY` | Vercel + `.env.local` | Server-side only — never expose to browser |
 | `NEXT_PUBLIC_SUPABASE_URL` | Vercel + `.env.local` | Safe for client-side |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Vercel + `.env.local` | Safe for client-side (RLS enforced) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Vercel + `.env.local` | **Secret — server-only, never expose.** Bypasses RLS; required by cron/API routes since CRM tables are staff-only |
 
 Never commit `.env.local` — already in `.gitignore`.
 
+## Access Control
+The dashboard holds client PII and staff background-check records, so it is **not** public.
+
+- **Browser** → anon key **+ a signed-in Supabase Auth session**. The anon key alone reads nothing.
+- **Server (cron, API routes)** → `SUPABASE_SERVICE_ROLE_KEY` via `lib/supabaseServer.js` (`serverSupabase()`). Cron has no user session, so it must bypass RLS this way. **Never import that module from browser code.**
+- **CRM table policies** grant access to `authenticated` AND `is_staff()` — being logged in is not enough. A user must have a row in `app_staff`, added by an admin. This holds even if Supabase self-signup gets switched on.
+- **Adding a staff member:** create the user in Supabase → Authentication → Users, then insert their `user_id` into `app_staff`.
+- Public marketing-site tables (`assessments`, `bookings`, `careers`, `brochure_requests`, `chat_leads`, `sc_inquiries`) keep their own anon INSERT policies — do not lock these or the website's forms break.
+
 ## Supabase Schema
-Four tables, all with RLS + anon/authenticated ALL policies:
-- `sc_contacts` — 99 SC contacts seeded (agency_name, email, phone, website, counties_served, languages, status: new|contacted|replied|converted)
+CRM tables (RLS, staff-only):
+- `sc_contacts` — SC contacts (agency_name, email, phone, website, counties_served, languages, status: new|contacted|replied|converted)
 - `email_templates` — name, subject, body with merge tags `{{agency_name}}`, `{{contact_name}}`
 - `sent_emails` — audit log (contact_id, template_id, to_email, subject, status, resend_id)
 - `campaigns` — template_id, status: draft|sending|complete, sent_count
+- `email_sequences`, `sequence_email_overrides`, `organizations`, `outreach_activities`, `followup_tasks`
+
+Care Management tables (RLS, staff-only):
+- `clients` — name, address, age, sex, phone, date_service_started, SC details, optional `sc_contact_id` → `sc_contacts`, status: active|inactive|discharged
+- `dsps` — employees: contact info, hire_date, drug screen / fingerprint / CDS scheduled+completed dates, medication training, HHA/CNA/CPR/driver's license expirations
+- `client_dsp_assignments` — join table; indexed both ways, partial unique index on `(client_id, dsp_id) WHERE status='active'` so a pair has one active assignment but keeps ended ones as history
+
+Compliance rules live in `lib/compliance.js` and are shared by the UI badges and the daily cron so thresholds can't drift.
+
+## Email Assets
+Outbound email images are served from **public Supabase Storage**, not this app's domain (`resolveLogoUrl` in `lib/emailHtml.js`). The dashboard is access-controlled; serving assets from it would break the logo in every email. Do not move them back to `public/`.
 
 ## Key Architecture Rules
 - **Resend API calls MUST go through a Next.js API route** — never call from browser
-- **Supabase anon key is safe client-side** — use `@supabase/supabase-js`, not raw fetch
+- **Supabase anon key is safe client-side** — use `@supabase/supabase-js`, not raw fetch. The **service-role** key is not: server-only, via `lib/supabaseServer.js`
+- **New CRM tables must get staff-only policies** (`authenticated` + `is_staff()`), never `TO anon`
 - **Batch sending:** default 10/batch, 3s between batches, 500ms between individual sends
 - **From address:** `outreach@harmonycarenj.org`
 - **CAN-SPAM:** every email must include physical address and unsubscribe note

@@ -9,15 +9,11 @@
  *      CRON_SECRET (optional), FROM_EMAIL, WEEKLY_BATCH_SIZE (optional)
  */
 import { runWeeklySend, serverSupabase, resolveLogoUrl } from "../../../lib/weeklySend";
+import { authorizeJob } from "../../../lib/apiAuth";
 
 export default async function handler(req, res) {
-  const authHeader = req.headers["authorization"];
-  const cronSecret = process.env.CRON_SECRET;
-  const isManual = req.headers["x-manual-trigger"] === "1";
-
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}` && !isManual) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  const auth = await authorizeJob(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
