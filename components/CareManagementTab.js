@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   cardStyle, inputStyle, btnPrimary, btnSecondary, pillToggle, fieldLabel, Toast, Modal,
+  formatPhone, showPhone,
 } from "./ui";
 import {
   CERT_FIELDS, CHECK_FIELDS, REQUIRED_CHECKS, ADVISORY_CHECKS, CERT_WARN_DAYS,
@@ -379,14 +380,15 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
   };
 
   // ── Reusable form bits ──
-  const textField = (form, setForm, key, label, type = "text") => (
+  // `format` normalizes on every keystroke — used for phone fields.
+  const textField = (form, setForm, key, label, type = "text", format) => (
     <div key={key}>
       {fieldLabel(label)}
       <input
         type={type}
         value={form[key] ?? ""}
-        onChange={(e) => setForm({ ...form, [key]: e.target.value })}
-        placeholder={type === "text" ? label : undefined}
+        onChange={(e) => setForm({ ...form, [key]: format ? format(e.target.value) : e.target.value })}
+        placeholder={type === "text" ? (format === formatPhone ? "(609)555-0143" : label) : undefined}
         style={inputStyle}
       />
     </div>
@@ -439,11 +441,19 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
   // ── Compliance banner ──
   const renderAlertBanner = () => {
     if (!alerts.length) return null;
-    const shown = alertsOpen ? alerts : alerts.slice(0, 3);
+    // Collapsed shows the summary line ONLY — the whole point is to get the
+    // banner out of the way. Expanding reveals every DSP and every issue.
     return (
-      <div style={{ ...cardStyle, padding: 16, marginBottom: 16, borderColor: "#f59e0b55" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      <div style={{ ...cardStyle, padding: alertsOpen ? 16 : "10px 16px", marginBottom: 16, borderColor: "#f59e0b55", transition: "padding 0.15s" }}>
+        <div
+          onClick={() => setAlertsOpen((v) => !v)}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAlertsOpen((v) => !v); } }}
+          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: "pointer" }}
+        >
           <div style={{ color: notCompliant ? "#f87171" : "#fbbf24", fontSize: 14, fontWeight: 700 }}>
+            <span style={{ display: "inline-block", width: 14, color: "#64748b", transform: alertsOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>▶</span>
             {notCompliant > 0
               ? `■ ${notCompliant} DSP${notCompliant === 1 ? "" : "s"} not compliant`
               : `⚑ ${alertCount} item${alertCount === 1 ? "" : "s"} flagged`}
@@ -451,33 +461,36 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
               {" · "}{alertCount} item{alertCount === 1 ? "" : "s"} across {alerts.length} DSP{alerts.length === 1 ? "" : "s"}
             </span>
           </div>
-          <button onClick={() => setAlertsOpen((v) => !v)} style={{ ...btnSecondary, padding: "5px 12px", fontSize: 12 }}>
-            {alertsOpen ? "Collapse" : `View all (${alerts.length})`}
+          <button
+            onClick={(e) => { e.stopPropagation(); setAlertsOpen((v) => !v); }}
+            style={{ ...btnSecondary, padding: "4px 12px", fontSize: 12 }}
+          >
+            {alertsOpen ? "Collapse" : "Expand"}
           </button>
         </div>
-        <div style={{ marginTop: 12 }}>
-          {shown.map((entry) => (
-            <div key={entry.id} style={{ padding: "8px 0", borderTop: "1px solid #1e293b" }}>
-              <button
-                onClick={() => { setSubView("dsps"); setDetailDspId(entry.id); }}
-                style={{ background: "none", border: "none", padding: 0, color: "#e2e8f0", fontSize: 13, fontWeight: 700, cursor: "pointer", textAlign: "left" }}
-              >
-                {entry.name}
-                {!entry.compliant && (
-                  <span style={{ color: "#f87171", fontWeight: 800, marginLeft: 8, fontSize: 11 }}>NOT COMPLIANT</span>
-                )}
-              </button>
-              {entry.issues.map((issue, i) => (
-                <div key={i} style={{ color: LEVEL_COLOR[issue.severity], fontSize: 12, marginTop: 3 }}>
-                  {issue.blocking ? "✕" : "⚑"} {issue.text}
-                </div>
-              ))}
-            </div>
-          ))}
-          {!alertsOpen && alerts.length > 3 && (
-            <p style={{ color: "#64748b", fontSize: 12, margin: "8px 0 0" }}>+ {alerts.length - 3} more DSP{alerts.length - 3 === 1 ? "" : "s"}…</p>
-          )}
-        </div>
+
+        {alertsOpen && (
+          <div style={{ marginTop: 12 }}>
+            {alerts.map((entry) => (
+              <div key={entry.id} style={{ padding: "8px 0", borderTop: "1px solid #1e293b" }}>
+                <button
+                  onClick={() => { setSubView("dsps"); setDetailDspId(entry.id); }}
+                  style={{ background: "none", border: "none", padding: 0, color: "#e2e8f0", fontSize: 13, fontWeight: 700, cursor: "pointer", textAlign: "left" }}
+                >
+                  {entry.name}
+                  {!entry.compliant && (
+                    <span style={{ color: "#f87171", fontWeight: 800, marginLeft: 8, fontSize: 11 }}>NOT COMPLIANT</span>
+                  )}
+                </button>
+                {entry.issues.map((issue, i) => (
+                  <div key={i} style={{ color: LEVEL_COLOR[issue.severity], fontSize: 12, marginTop: 3 }}>
+                    {issue.blocking ? "✕" : "⚑"} {issue.text}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   };
@@ -501,7 +514,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
         <>
           {grid([
             textField(clientForm, setClientForm, "name", "Full Name"),
-            textField(clientForm, setClientForm, "phone_number", "Phone Number"),
+            textField(clientForm, setClientForm, "phone_number", "Phone Number", "text", formatPhone),
             textField(clientForm, setClientForm, "age", "Age", "number"),
             selectField(clientForm, setClientForm, "sex", "Sex", SEX_OPTIONS, { includeBlank: true }),
             textField(clientForm, setClientForm, "date_service_started", "Date Service Started", "date"),
@@ -540,7 +553,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
             textField(clientForm, setClientForm, "sc_name", "SC Name"),
             textField(clientForm, setClientForm, "sc_agency", "SC Agency"),
             textField(clientForm, setClientForm, "sc_email", "SC Email"),
-            textField(clientForm, setClientForm, "sc_phone", "SC Phone"),
+            textField(clientForm, setClientForm, "sc_phone", "SC Phone", "text", formatPhone),
           ])}
         </>
       ))}
@@ -651,7 +664,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
                       </button>
                     </td>
                     <td style={{ ...cell, whiteSpace: "nowrap" }}>{c.age || "—"}{c.sex ? ` · ${c.sex}` : ""}</td>
-                    <td style={{ ...cell, whiteSpace: "nowrap" }}>{c.phone_number || "—"}</td>
+                    <td style={{ ...cell, whiteSpace: "nowrap" }}>{showPhone(c.phone_number) || "—"}</td>
                     <td style={{ ...cell, fontSize: 12, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.address || "—"}</td>
                     <td style={{ ...cell, whiteSpace: "nowrap" }}>{c.date_service_started || "—"}</td>
                     <td style={{ ...cell }}>
@@ -716,7 +729,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
         <>
           {grid([
             textField(dspForm, setDspForm, "name", "Full Name"),
-            textField(dspForm, setDspForm, "phone_number", "Phone Number"),
+            textField(dspForm, setDspForm, "phone_number", "Phone Number", "text", formatPhone),
             textField(dspForm, setDspForm, "email", "Email"),
             selectField(dspForm, setDspForm, "sex", "Sex", SEX_OPTIONS, { includeBlank: true }),
             textField(dspForm, setDspForm, "hire_date", "Hire Date", "date"),
@@ -821,7 +834,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
                         {d.name}
                       </button>
                     </td>
-                    <td style={{ ...cell, whiteSpace: "nowrap" }}>{d.phone_number || "—"}</td>
+                    <td style={{ ...cell, whiteSpace: "nowrap" }}>{showPhone(d.phone_number) || "—"}</td>
                     <td style={{ ...cell, color: "#7dd3fc", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>{d.email || "—"}</td>
                     <td style={{ ...cell, whiteSpace: "nowrap" }}>{d.hire_date || "—"}</td>
                     <td style={{ ...cell }}>
@@ -951,7 +964,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
         <div style={{ marginBottom: 18 }}>
           {detailRow("Age", c.age)}
           {detailRow("Sex", c.sex)}
-          {detailRow("Phone", c.phone_number)}
+          {detailRow("Phone", showPhone(c.phone_number))}
           {detailRow("Address", c.address)}
           {detailRow("Service started", c.date_service_started)}
           {detailRow("Time in service", durationLabel(daysSince(c.date_service_started)))}
@@ -962,7 +975,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
           {detailRow("Name", c.sc_name)}
           {detailRow("Agency", c.sc_agency)}
           {detailRow("Email", c.sc_email)}
-          {detailRow("Phone", c.sc_phone)}
+          {detailRow("Phone", showPhone(c.sc_phone))}
           {detailRow("Linked in Outreach CRM", c.sc_contact_id ? "Yes" : "No")}
         </div>
 
@@ -982,7 +995,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
                   <ComplianceBadge dsp={d} />
                 </div>
                 <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>
-                  {d.phone_number || "no phone"} · <span style={{ color: "#7dd3fc" }}>{d.email || "no email"}</span>
+                  {showPhone(d.phone_number) || "no phone"} · <span style={{ color: "#7dd3fc" }}>{d.email || "no email"}</span>
                 </div>
                 <div style={{ color: "#64748b", fontSize: 11, marginTop: 3 }}>
                   Assigned {a.assigned_date} · {durationLabel(daysSince(a.assigned_date))}
@@ -1067,7 +1080,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
 
         <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Contact</div>
         <div style={{ marginBottom: 18 }}>
-          {detailRow("Phone", d.phone_number)}
+          {detailRow("Phone", showPhone(d.phone_number))}
           {detailRow("Email", d.email)}
           {detailRow("Sex", d.sex)}
           {detailRow("Address", d.address)}

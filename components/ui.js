@@ -150,6 +150,35 @@ export function LoginPanel({ supabase }) {
   );
 }
 
+/**
+ * Normalizes a phone number to (xxx)xxx-xxxx.
+ *
+ * Safe to run on every keystroke: it formats progressively as digits arrive and
+ * never inserts a trailing bracket you'd have to backspace through. Handles
+ * pasted values in any shape — "609.755.5593", "+1 609 755 5593",
+ * "609-755-5593" all normalize to (609)755-5593.
+ */
+export function formatPhone(value) {
+  let digits = String(value ?? "").replace(/\D/g, "");
+  // Strip a US country code so pasted +1 numbers don't shift every group.
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  digits = digits.slice(0, 10);
+
+  if (digits.length === 0) return "";
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `(${digits.slice(0, 3)})${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)})${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+/**
+ * Display helper. Falls back to the raw stored value when it can't be parsed as
+ * a phone number — so legacy or free-text entries ("ask reception") still show
+ * rather than silently vanishing.
+ */
+export function showPhone(value) {
+  return formatPhone(value) || value || "";
+}
+
 export function Toast({ message }) {
   if (!message) return null;
   return (
