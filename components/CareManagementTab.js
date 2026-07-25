@@ -3,8 +3,10 @@ import {
   cardStyle, inputStyle, btnPrimary, btnSecondary, pillToggle, fieldLabel, Toast, Modal,
 } from "./ui";
 import {
-  CERT_FIELDS, CHECK_FIELDS, CERT_WARN_DAYS,
-  dspComplianceIssues, complianceLevel, complianceAlerts, complianceAlertCount,
+  CERT_FIELDS, CHECK_FIELDS, REQUIRED_CHECKS, ADVISORY_CHECKS, CERT_WARN_DAYS,
+  dspComplianceIssues, advisoryIssues, complianceStatus, isCompliant,
+  complianceAlerts, complianceAlertCount, nonCompliantCount,
+  COMPLIANT, FLAGGED, NOT_COMPLIANT,
   daysUntil, daysSince, todayISO,
 } from "../lib/compliance";
 
@@ -19,8 +21,17 @@ const STATUS_COLOR = {
   discharged: "#ef4444",
   ended: "#6b7280",
 };
+// Severity colors for individual issue lines.
 const LEVEL_COLOR = { green: "#22c55e", yellow: "#f59e0b", red: "#ef4444" };
-const LEVEL_LABEL = { green: "Compliant", yellow: "Review soon", red: "Action needed" };
+
+// Badge appearance per compliance state. "Flagged" still reads as compliant —
+// green — because drug screen and fingerprinting are done; the high-risk
+// advisories ride alongside as a small red tag.
+const STATUS_STYLE = {
+  [COMPLIANT]: { label: "Compliant", color: "#22c55e", dot: "●" },
+  [FLAGGED]: { label: "Compliant", color: "#22c55e", dot: "●" },
+  [NOT_COMPLIANT]: { label: "Not compliant", color: "#ef4444", dot: "■" },
+};
 
 const emptyClient = {
   name: "", address: "", age: "", sex: "", phone_number: "", date_service_started: "",
@@ -95,17 +106,46 @@ function StatusBadge({ status, fallback = "active" }) {
   return <Badge text={s} color={STATUS_COLOR[s] || "#6b7280"} />;
 }
 
+/**
+ * Compliance at a glance.
+ *
+ * Two independent signals, deliberately not merged into one colour:
+ *   · the main badge = compliant or not (drug screen + fingerprinting only)
+ *   · the small red tag = high-risk advisories (CDS outstanding, cert lapsing)
+ *
+ * So a DSP can read "Compliant ⚑2" — cleared to work, but needs chasing.
+ */
 function ComplianceBadge({ dsp, onClick }) {
-  const level = complianceLevel(dsp);
-  const issues = dspComplianceIssues(dsp);
-  const dot = { green: "●", yellow: "▲", red: "■" }[level];
+  const status = complianceStatus(dsp);
+  const style = STATUS_STYLE[status];
+  const blocking = dspComplianceIssues(dsp).filter((i) => i.blocking);
+  const advisories = advisoryIssues(dsp);
+
+  const tooltip = [
+    ...blocking.map((i) => `✕ ${i.text}`),
+    ...advisories.map((i) => `⚑ ${i.text}`),
+  ].join("\n") || "Drug screen and fingerprinting complete — no advisories";
+
   return (
-    <Badge
-      text={`${dot} ${LEVEL_LABEL[level]}${issues.length ? ` (${issues.length})` : ""}`}
-      color={LEVEL_COLOR[level]}
-      title={issues.length ? issues.map((i) => i.text).join("\n") : "No compliance issues"}
-      onClick={onClick}
-    />
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }} title={tooltip}>
+      <Badge
+        text={`${style.dot} ${style.label}${blocking.length ? ` (${blocking.length})` : ""}`}
+        color={style.color}
+        onClick={onClick}
+      />
+      {advisories.length > 0 && (
+        <span
+          onClick={onClick}
+          style={{
+            display: "inline-block", padding: "2px 7px", borderRadius: 99, fontSize: 10, fontWeight: 800,
+            background: "#ef444422", color: "#ef4444", border: "1px solid #ef444455",
+            cursor: onClick ? "pointer" : "default",
+          }}
+        >
+          ⚑ {advisories.length}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -224,6 +264,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
   }, [activeAssignments]);
 
   const alerts = useMemo(() => complianceAlerts(dsps), [dsps]);
+  const notCompliant = useMemo(() => nonCompliantCount(dsps), [dsps]);
   const alertCount = alerts.reduce((n, e) => n + e.issues.length, 0);
 
   // ── Client mutations ──
@@ -402,9 +443,13 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
     return (
       <div style={{ ...cardStyle, padding: 16, marginBottom: 16, borderColor: "#f59e0b55" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ color: "#fbbf24", fontSize: 14, fontWeight: 700 }}>
-            ⚠️ {alertCount} compliance item{alertCount === 1 ? "" : "s"} need attention
-            <span style={{ color: "#64748b", fontWeight: 500 }}> · {alerts.length} DSP{alerts.length === 1 ? "" : "s"}</span>
+          <div style={{ color: notCompliant ? "#f87171" : "#fbbf24", fontSize: 14, fontWeight: 700 }}>
+            {notCompliant > 0
+              ? `■ ${notCompliant} DSP${notCompliant === 1 ? "" : "s"} not compliant`
+              : `⚑ ${alertCount} item${alertCount === 1 ? "" : "s"} flagged`}
+            <span style={{ color: "#64748b", fontWeight: 500 }}>
+              {" · "}{alertCount} item{alertCount === 1 ? "" : "s"} across {alerts.length} DSP{alerts.length === 1 ? "" : "s"}
+            </span>
           </div>
           <button onClick={() => setAlertsOpen((v) => !v)} style={{ ...btnSecondary, padding: "5px 12px", fontSize: 12 }}>
             {alertsOpen ? "Collapse" : `View all (${alerts.length})`}
@@ -418,9 +463,14 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
                 style={{ background: "none", border: "none", padding: 0, color: "#e2e8f0", fontSize: 13, fontWeight: 700, cursor: "pointer", textAlign: "left" }}
               >
                 {entry.name}
+                {!entry.compliant && (
+                  <span style={{ color: "#f87171", fontWeight: 800, marginLeft: 8, fontSize: 11 }}>NOT COMPLIANT</span>
+                )}
               </button>
               {entry.issues.map((issue, i) => (
-                <div key={i} style={{ color: LEVEL_COLOR[issue.severity], fontSize: 12, marginTop: 3 }}>· {issue.text}</div>
+                <div key={i} style={{ color: LEVEL_COLOR[issue.severity], fontSize: 12, marginTop: 3 }}>
+                  {issue.blocking ? "✕" : "⚑"} {issue.text}
+                </div>
               ))}
             </div>
           ))}
@@ -650,7 +700,8 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
     const matchesSearch = !q || [d.name, d.email, d.phone_number].some((f) => (f || "").toLowerCase().includes(q));
     const matchesStatus =
       dspStatusFilter === "all" ? true
-        : dspStatusFilter === "needs_attention" ? complianceLevel(d) !== "green"
+        : dspStatusFilter === "not_compliant" ? !isCompliant(d)
+        : dspStatusFilter === "needs_attention" ? complianceStatus(d) !== COMPLIANT
         : (d.status || "active") === dspStatusFilter;
     return matchesSearch && matchesStatus;
   });
@@ -675,14 +726,14 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
         </>
       ))}
 
-      {formSection("Background Checks", grid([
+      {formSection("Background Checks — required for compliance", grid([
         textField(dspForm, setDspForm, "drug_screen_scheduled_date", "Drug Screen — Scheduled", "date"),
         textField(dspForm, setDspForm, "drug_screen_completed_date", "Drug Screen — Completed", "date"),
         textField(dspForm, setDspForm, "fingerprint_scheduled_date", "Fingerprinting — Scheduled", "date"),
         textField(dspForm, setDspForm, "fingerprint_completed_date", "Fingerprinting — Completed", "date"),
       ]))}
 
-      {formSection("Training", (
+      {formSection("Training — advisory, does not block compliance", (
         <>
           {grid([
             textField(dspForm, setDspForm, "cds_scheduled_date", "College of Direct Support — Start", "date"),
@@ -736,14 +787,15 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
         <p style={{ color: "#64748b", fontSize: 13, margin: 0 }}>
-          {dsps.length} total · {filteredDsps.length} shown · {alerts.length} needing attention
+          {dsps.length} total · {filteredDsps.length} shown · {notCompliant} not compliant · {alerts.length} needing attention
         </p>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <input placeholder="Search DSPs by name, email, phone…" value={dspSearch} onChange={(e) => setDspSearch(e.target.value)} style={{ ...inputStyle, width: 260 }} />
           <select value={dspStatusFilter} onChange={(e) => setDspStatusFilter(e.target.value)} style={{ ...inputStyle, width: "auto", cursor: "pointer" }}>
             <option value="all">All statuses</option>
             {DSP_STATUSES.map((s) => <option key={s} value={s} style={{ textTransform: "capitalize" }}>{s}</option>)}
-            <option value="needs_attention">⚠️ Compliance issues</option>
+            <option value="not_compliant">■ Not compliant</option>
+            <option value="needs_attention">⚑ Not compliant or flagged</option>
           </select>
           <button onClick={openAddDsp} style={btnPrimary}>+ Add DSP</button>
         </div>
@@ -980,13 +1032,37 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
       <Modal title={d.name} subtitle={`DSP · ${d.status || "active"}${d.hire_date ? ` · hired ${d.hire_date}` : ""}`} onClose={() => setDetailDspId(null)} maxWidth={620}>
         <div style={{ marginBottom: 18 }}>
           <ComplianceBadge dsp={d} />
-          {issues.length > 0 && (
-            <div style={{ marginTop: 10 }}>
-              {issues.map((i, n) => (
-                <div key={n} style={{ color: LEVEL_COLOR[i.severity], fontSize: 12, marginBottom: 3 }}>· {i.text}</div>
-              ))}
-            </div>
-          )}
+          {(() => {
+            const blocking = issues.filter((i) => i.blocking);
+            const advisories = issues.filter((i) => !i.blocking);
+            return (
+              <div style={{ marginTop: 10 }}>
+                {blocking.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ color: "#f87171", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+                      Blocking compliance
+                    </div>
+                    {blocking.map((i, n) => (
+                      <div key={n} style={{ color: LEVEL_COLOR[i.severity], fontSize: 12, marginBottom: 3 }}>✕ {i.text}</div>
+                    ))}
+                  </div>
+                )}
+                {advisories.length > 0 && (
+                  <div>
+                    <div style={{ color: "#fbbf24", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+                      High risk — does not block compliance
+                    </div>
+                    {advisories.map((i, n) => (
+                      <div key={n} style={{ color: LEVEL_COLOR[i.severity], fontSize: 12, marginBottom: 3 }}>⚑ {i.text}</div>
+                    ))}
+                  </div>
+                )}
+                {issues.length === 0 && (
+                  <div style={{ color: "#4ade80", fontSize: 12 }}>Drug screen and fingerprinting complete · no advisories</div>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Contact</div>
@@ -999,18 +1075,26 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
 
         <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Background Checks & Training</div>
         <div style={{ marginBottom: 18 }}>
-          {CHECK_FIELDS.map(({ label, scheduled, completed }) => (
-            <div key={scheduled} style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "7px 0", borderBottom: "1px solid #1e293b" }}>
-              <span style={{ color: "#64748b", fontSize: 12 }}>{label}</span>
-              <span style={{ fontSize: 12, textAlign: "right" }}>
-                <span style={{ color: "#94a3b8" }}>scheduled {d[scheduled] || "—"}</span>
-                {" · "}
-                <span style={{ color: d[completed] ? "#4ade80" : "#f87171", fontWeight: 600 }}>
-                  {d[completed] ? `completed ${d[completed]}` : "not completed"}
+          {CHECK_FIELDS.map(({ label, scheduled, completed }) => {
+            const required = REQUIRED_CHECKS.some((c) => c.completed === completed);
+            return (
+              <div key={scheduled} style={{ display: "flex", justifyContent: "space-between", gap: 16, padding: "7px 0", borderBottom: "1px solid #1e293b" }}>
+                <span style={{ color: "#64748b", fontSize: 12 }}>
+                  {label}
+                  <span style={{ color: required ? "#f87171" : "#475569", fontSize: 10, fontWeight: 700, marginLeft: 6 }}>
+                    {required ? "REQUIRED" : "ADVISORY"}
+                  </span>
                 </span>
-              </span>
-            </div>
-          ))}
+                <span style={{ fontSize: 12, textAlign: "right" }}>
+                  <span style={{ color: "#94a3b8" }}>scheduled {d[scheduled] || "—"}</span>
+                  {" · "}
+                  <span style={{ color: d[completed] ? "#4ade80" : required ? "#f87171" : "#fbbf24", fontWeight: 600 }}>
+                    {d[completed] ? `completed ${d[completed]}` : "not completed"}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
           {detailRow("Medication Training", d.medication_training_completed
             ? <span style={{ color: "#4ade80", fontWeight: 600 }}>Completed</span>
             : <span style={{ color: "#64748b" }}>Not completed</span>)}

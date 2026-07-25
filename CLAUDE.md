@@ -50,7 +50,16 @@ Care Management tables (RLS, staff-only):
 - `dsps` — employees: contact info, hire_date, drug screen / fingerprint / CDS scheduled+completed dates, medication training, HHA/CNA/CPR/driver's license expirations
 - `client_dsp_assignments` — join table; indexed both ways, partial unique index on `(client_id, dsp_id) WHERE status='active'` so a pair has one active assignment but keeps ended ones as history
 
-Compliance rules live in `lib/compliance.js` and are shared by the UI badges and the daily cron so thresholds can't drift.
+### DSP Compliance Rule
+Lives in `lib/compliance.js`, shared by the UI badges and the daily cron so it can't drift.
+
+- **Compliant** ⟺ drug screen **completed** AND fingerprinting **completed**. Nothing else affects it.
+- This is about **completion, not scheduling** — a new DSP with nothing booked is *not* compliant. Scheduled dates only sharpen the message ("12 days past its scheduled date" vs "nothing scheduled yet").
+- **Advisory** (small red ⚑ tag, still compliant): College of Direct Support incomplete = high risk; any certification expired or expiring within 30 days.
+- Certifications are nullable per DSP — a blank date means "not applicable", never "missing".
+- Inactive DSPs are excluded from alerts.
+
+Add new hard requirements to `REQUIRED_CHECKS`, advisory ones to `ADVISORY_CHECKS`.
 
 ## Email Assets
 Outbound email images are served from **public Supabase Storage**, not this app's domain (`resolveLogoUrl` in `lib/emailHtml.js`). The dashboard is access-controlled; serving assets from it would break the logo in every email. Do not move them back to `public/`.
