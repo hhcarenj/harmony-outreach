@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { renderEmailHtml } from "../lib/emailHtml";
 import { cardStyle, inputStyle, btnPrimary, btnSecondary, pillStyle, Toast, LoginPanel } from "../components/ui";
 import CareManagementTab from "../components/CareManagementTab";
-import { complianceAlertCount } from "../lib/compliance";
+import { complianceAlertCount, COMPLIANCE_COLUMNS } from "../lib/compliance";
 import {
   SEQUENCE_LABEL,
   STEP_SUBJECTS,
@@ -1414,6 +1414,15 @@ function CampaignsTab({ supabase, config }) {
     const toSend = filtered.filter(c => selectedContacts.has(c.id) && c.email);
     let sent = 0;
 
+    // Fetched once up front, not per contact — /api/send-email is staff-only, and
+    // a batch can be hundreds of sends.
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      setSendLog([{ error: "Your session expired — sign in again before sending." }]);
+      setSending(false);
+      return;
+    }
+
     for (let i = 0; i < toSend.length; i++) {
       const c = toSend[i];
       const subject = personalize(template.subject, c);
@@ -1424,7 +1433,10 @@ function CampaignsTab({ supabase, config }) {
         // This keeps the RESEND_API_KEY secret on the server.
         const res = await fetch("/api/send-email", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
           body: JSON.stringify({
             to: c.email,
             subject,
@@ -2813,7 +2825,7 @@ export default function App() {
     if (!supabase || !session) { setCareAlerts(0); return; }
     let cancelled = false;
     (async () => {
-      const { data, error } = await supabase.from("dsps").select("*");
+      const { data, error } = await supabase.from("dsps").select(COMPLIANCE_COLUMNS);
       if (!cancelled && !error) setCareAlerts(complianceAlertCount(data || []));
     })();
     return () => { cancelled = true; };

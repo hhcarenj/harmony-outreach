@@ -17,7 +17,7 @@
  */
 import { runWeeklySend, resolveLogoUrl } from "../../../lib/weeklySend";
 import { runDueSequences } from "../../../lib/sequenceRunner";
-import { complianceAlerts } from "../../../lib/compliance";
+import { complianceAlerts, COMPLIANCE_COLUMNS } from "../../../lib/compliance";
 import { serverSupabase, usingServiceRole } from "../../../lib/supabaseServer";
 import { authorizeJob } from "../../../lib/apiAuth";
 
@@ -27,7 +27,7 @@ const WEEKLY_SEND_DOW = parseInt(process.env.WEEKLY_SEND_DOW || "1", 10); // 0=S
 // Reads the DSP roster and returns the alert-worthy compliance issues. A failure
 // here must not fail the whole cron — the email jobs above already ran.
 async function runComplianceCheck(supabase) {
-  const { data, error } = await supabase.from("dsps").select("*");
+  const { data, error } = await supabase.from("dsps").select(COMPLIANCE_COLUMNS);
   if (error) return { error: error.message, alert_count: 0, dsps_flagged: 0, alerts: [] };
   const alerts = complianceAlerts(data || []);
   return {

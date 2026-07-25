@@ -8,6 +8,7 @@
  */
 import { processOne } from "../../lib/sequenceRunner";
 import { serverSupabase } from "../../lib/supabaseServer";
+import { authorizeStaff } from "../../lib/apiAuth";
 
 const FROM_EMAIL = process.env.FROM_EMAIL || "outreach@harmonycarenj.org";
 
@@ -15,6 +16,11 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
+
+  // Sends real mail and reads/writes via the service-role key (which bypasses
+  // RLS), so it must not be callable anonymously.
+  const auth = await authorizeStaff(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
 
   const { sequenceId } = req.body || {};
   if (!sequenceId) {
@@ -34,20 +40,27 @@ export default async function handler(req, res) {
 
   const supabase = serverSupabase();
 
-  const { data: seq, error } = await supabase
-    .from("email_sequences")
-    .select("*")
-    .eq("id", sequenceId)
-    .single();
+  // Wrapped so an unexpected failure returns a clean error instead of an
+  // unhandled rejection with a stack trace, matching the other routes.
+  try {
+    const { data: seq, error } = await supabase
+      .from("email_sequences")
+      .select("*")
+      .eq("id", sequenceId)
+      .single();
 
-  if (error || !seq) {
-    return res.status(404).json({ error: "Sequence not found: " + (error?.message || sequenceId) });
+    if (error || !seq) {
+      return res.status(404).json({ error: "Sequence not found: " + (error?.message || sequenceId) });
+    }
+
+    const result = await processOne({ supabase, resendKey, from: FROM_EMAIL, seq });
+
+    if (result.status === "failed") {
+      return res.status(502).json({ error: result.error, result });
+    }
+    return res.status(200).json({ result });
+  } catch (err) {
+    console.error("send-sequence-email error:", err);
+    return res.status(500).json({ error: err.message });
   }
-
-  const result = await processOne({ supabase, resendKey, from: FROM_EMAIL, seq });
-
-  if (result.status === "failed") {
-    return res.status(502).json({ error: result.error, result });
-  }
-  return res.status(200).json({ result });
 }

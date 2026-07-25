@@ -1,11 +1,16 @@
 // Reset contacts from "contacted" back to "new" after 4 days
 import { serverSupabase } from '../../../lib/supabaseServer';
+import { authorizeJob } from '../../../lib/apiAuth';
 
 export default async function handler(req, res) {
-  // Verify cron secret
-  if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+  // Was: `req.headers.authorization !== \`Bearer ${process.env.CRON_SECRET}\``.
+  // With CRON_SECRET unset that compares against the literal string
+  // "Bearer undefined" — a guessable password. authorizeJob fails CLOSED
+  // (it requires the secret to be present and non-empty before matching), and
+  // routing through it removes the duplicated hand-rolled comparison entirely
+  // so the same bug can't reappear here.
+  const auth = await authorizeJob(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
 
   const supabase = serverSupabase();
 

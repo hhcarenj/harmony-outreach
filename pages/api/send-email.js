@@ -10,6 +10,7 @@
  */
 
 import { renderEmailHtml, renderEmailText, resolveLogoUrl } from "../../lib/emailHtml";
+import { authorizeStaff } from "../../lib/apiAuth";
 
 // Plain-text fallback footer (mirrors the HTML signature for non-HTML mail clients).
 const PLAIN_FOOTER = `Nate Ojugo (Admin Manager)
@@ -44,6 +45,12 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
+
+  // This route takes caller-supplied `to`, `from`, `subject` and `text` and sends
+  // through the verified harmonycarenj.org domain. Without this check it is an
+  // open mail relay — anyone could send mail that appears to come from the agency.
+  const auth = await authorizeStaff(req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
 
   const { to, subject, text, from } = req.body;
 

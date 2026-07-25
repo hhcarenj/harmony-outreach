@@ -174,21 +174,32 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
       supabase.from("clients").select("*").order("name"),
       supabase.from("dsps").select("*").order("name"),
       supabase.from("client_dsp_assignments").select("*").order("assigned_date", { ascending: false }),
-      supabase.from("sc_contacts").select("id, agency_name, contact_name, email, phone").order("agency_name"),
     ]);
-    const err = c.error || d.error || a.error || sc.error;
+    const err = c.error || d.error || a.error;
     if (err) {
       setLoadError(err.message || JSON.stringify(err));
     } else {
       setClients(c.data || []);
       setDsps(d.data || []);
       setAssignments(a.data || []);
-      setScContacts(sc.data || []);
     }
     setLoading(false);
   }, [supabase]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // The SC directory is ~750 rows and feeds one optional dropdown inside the
+  // client form. Loading it up front cost a full table scan on every visit to
+  // this tab, including the many that never open the form — so it's fetched on
+  // first form open instead, and cached for the rest of the session.
+  const loadScContacts = useCallback(async () => {
+    if (scContacts.length) return;
+    const { data } = await supabase
+      .from("sc_contacts")
+      .select("id, agency_name, contact_name, email, phone")
+      .order("agency_name");
+    setScContacts(data || []);
+  }, [supabase, scContacts.length]);
 
   // Keep the tab badge in sync after any DSP edit.
   useEffect(() => {
@@ -216,13 +227,19 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
   const alertCount = alerts.reduce((n, e) => n + e.issues.length, 0);
 
   // ── Client mutations ──
-  const openAddClient = () => { setClientForm({ ...emptyClient }); setEditingClientId(null); setScSearch(""); };
+  const openAddClient = () => {
+    setClientForm({ ...emptyClient });
+    setEditingClientId(null);
+    setScSearch("");
+    loadScContacts();
+  };
   const openEditClient = (c) => {
     setClientForm(toForm(c, emptyClient));
     setEditingClientId(c.id);
     setScSearch("");
     setAssignPick("");
     setAssignSearch("");
+    loadScContacts();
   };
   const closeClientForm = () => { setClientForm(null); setEditingClientId(null); };
 
