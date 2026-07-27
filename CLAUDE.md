@@ -49,6 +49,7 @@ Care Management tables (RLS, staff-only):
 - `clients` — name, address, age, sex, phone, date_service_started, SC details, optional `sc_contact_id` → `sc_contacts`, status: active|inactive|discharged
 - `dsps` — employees: contact info, hire_date, drug screen / fingerprint / CDS scheduled+completed dates, medication training, HHA/CNA/CPR/driver's license expirations
 - `client_dsp_assignments` — join table; indexed both ways, partial unique index on `(client_id, dsp_id) WHERE status='active'` so a pair has one active assignment but keeps ended ones as history
+- `client_guardians` — legal guardians, many per client (co-guardian parents, agency/court-appointed): name, relationship, phone, email. `ON DELETE CASCADE` from `clients`, FK indexed. Edited as buffered rows in the client form and reconciled on save (upsert existing / insert new / delete removed)
 
 ### DSP Compliance Rule
 Lives in `lib/compliance.js`, shared by the UI badges and the daily cron so it can't drift.

@@ -15,6 +15,10 @@ import {
 const CLIENT_STATUSES = ["active", "inactive", "discharged"];
 const DSP_STATUSES = ["active", "inactive"];
 const SEX_OPTIONS = ["Male", "Female", "Other"];
+const GUARDIAN_RELATIONSHIPS = [
+  "Mother", "Father", "Parent", "Grandparent", "Sibling", "Aunt/Uncle", "Spouse",
+  "Legal Guardian", "Agency", "Court-Appointed", "Other",
+];
 
 const STATUS_COLOR = {
   active: "#22c55e",
@@ -179,6 +183,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
   const [clients, setClients] = useState([]);
   const [dsps, setDsps] = useState([]);
   const [assignments, setAssignments] = useState([]);
+  const [guardians, setGuardians] = useState([]);
   const [scContacts, setScContacts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -194,6 +199,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
   const [scSearch, setScSearch] = useState("");
   const [assignPick, setAssignPick] = useState("");
   const [assignSearch, setAssignSearch] = useState("");
+  const [guardianRows, setGuardianRows] = useState([]);
   const [detailClientId, setDetailClientId] = useState(null);
 
   // DSPs sub-view
@@ -211,18 +217,20 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
   const loadAll = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
-    const [c, d, a, sc] = await Promise.all([
+    const [c, d, a, g] = await Promise.all([
       supabase.from("clients").select("*").order("name"),
       supabase.from("dsps").select("*").order("name"),
       supabase.from("client_dsp_assignments").select("*").order("assigned_date", { ascending: false }),
+      supabase.from("client_guardians").select("*").order("created_at"),
     ]);
-    const err = c.error || d.error || a.error;
+    const err = c.error || d.error || a.error || g.error;
     if (err) {
       setLoadError(err.message || JSON.stringify(err));
     } else {
       setClients(c.data || []);
       setDsps(d.data || []);
       setAssignments(a.data || []);
+      setGuardians(g.data || []);
     }
     setLoading(false);
   }, [supabase]);
@@ -268,30 +276,103 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
   const notCompliant = useMemo(() => nonCompliantCount(dsps), [dsps]);
   const alertCount = alerts.reduce((n, e) => n + e.issues.length, 0);
 
+  const guardiansByClient = useMemo(() => {
+    const m = {};
+    guardians.forEach((g) => { (m[g.client_id] = m[g.client_id] || []).push(g); });
+    return m;
+  }, [guardians]);
+
   // ── Client mutations ──
+  // Guardian rows live in their own state rather than on clientForm, because
+  // clientPayload() writes every clientForm key to the `clients` table — a
+  // `guardians` key there would be rejected as an unknown column.
   const openAddClient = () => {
     setClientForm({ ...emptyClient });
     setEditingClientId(null);
+    setGuardianRows([]);
     setScSearch("");
     loadScContacts();
   };
   const openEditClient = (c) => {
     setClientForm(toForm(c, emptyClient));
     setEditingClientId(c.id);
+    setGuardianRows((guardiansByClient[c.id] || []).map((g) => ({
+      id: g.id, name: g.name || "", relationship: g.relationship || "",
+      phone: g.phone || "", email: g.email || "",
+    })));
     setScSearch("");
     setAssignPick("");
     setAssignSearch("");
     loadScContacts();
   };
-  const closeClientForm = () => { setClientForm(null); setEditingClientId(null); };
+  const closeClientForm = () => { setClientForm(null); setEditingClientId(null); setGuardianRows([]); };
+
+  /**
+   * Reconciles the edited guardian rows against what's stored.
+   * Rows carrying an `id` already exist (upserted); rows without one are new
+   * (inserted); stored rows no longer present were removed (deleted).
+   * Blank-name rows are dropped so an empty "+ Add Guardian" row is harmless.
+   */
+  const saveGuardians = async (clientId) => {
+    const rows = guardianRows.filter((g) => (g.name || "").trim());
+    const stored = guardiansByClient[clientId] || [];
+    const keptIds = new Set(rows.filter((r) => r.id).map((r) => r.id));
+
+    const removed = stored.filter((s) => !keptIds.has(s.id)).map((s) => s.id);
+    if (removed.length) {
+      const { error } = await supabase.from("client_guardians").delete().in("id", removed);
+      if (error) return error;
+    }
+
+    const shape = (r) => ({
+      client_id: clientId,
+      name: r.name.trim(),
+      relationship: blankToNull(r.relationship),
+      phone: blankToNull(r.phone),
+      email: blankToNull(r.email),
+    });
+
+    const existing = rows.filter((r) => r.id).map((r) => ({ id: r.id, ...shape(r), updated_at: new Date().toISOString() }));
+    if (existing.length) {
+      const { error } = await supabase.from("client_guardians").upsert(existing);
+      if (error) return error;
+    }
+
+    const added = rows.filter((r) => !r.id).map(shape);
+    if (added.length) {
+      const { error } = await supabase.from("client_guardians").insert(added);
+      if (error) return error;
+    }
+    return null;
+  };
 
   const saveClient = async () => {
     const payload = clientPayload(clientForm);
     if (!payload.name) return;
-    const { error } = editingClientId
-      ? await supabase.from("clients").update({ ...payload, updated_at: new Date().toISOString() }).eq("id", editingClientId)
-      : await supabase.from("clients").insert([payload]);
-    if (error) { alert("Could not save client: " + error.message); return; }
+
+    let clientId = editingClientId;
+    if (editingClientId) {
+      const { error } = await supabase.from("clients")
+        .update({ ...payload, updated_at: new Date().toISOString() })
+        .eq("id", editingClientId);
+      if (error) { alert("Could not save client: " + error.message); return; }
+    } else {
+      // Need the generated id to attach guardians to a brand-new client.
+      const { data, error } = await supabase.from("clients").insert([payload]).select();
+      if (error) { alert("Could not save client: " + error.message); return; }
+      clientId = data?.[0]?.id;
+    }
+
+    if (clientId) {
+      const gErr = await saveGuardians(clientId);
+      if (gErr) {
+        // The client itself saved — say so plainly rather than implying nothing happened.
+        alert(`${payload.name} was saved, but their guardians could not be updated: ${gErr.message}`);
+        loadAll();
+        return;
+      }
+    }
+
     showToast(`${payload.name} ${editingClientId ? "updated" : "added"}`);
     closeClientForm();
     loadAll();
@@ -299,7 +380,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
 
   const deleteClient = async (id) => {
     const c = clientById[id];
-    if (!confirm(`Delete ${c?.name || "this client"} permanently? Their DSP assignment history will be removed too.`)) return;
+    if (!confirm(`Delete ${c?.name || "this client"} permanently? Their guardian records and DSP assignment history will be removed too.`)) return;
     const { error } = await supabase.from("clients").delete().eq("id", id);
     if (error) { alert("Could not delete client: " + error.message); return; }
     if (editingClientId === id) closeClientForm();
@@ -558,6 +639,63 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
         </>
       ))}
 
+      {/* Unlike DSP assignments, guardians are editable while creating a client:
+          the rows are buffered here and written once the client row exists. */}
+      {formSection("Legal Guardians", (
+        <>
+          {guardianRows.length === 0 && (
+            <p style={{ color: "#475569", fontSize: 13, margin: "0 0 10px" }}>
+              No guardians recorded. Add one if this client has a legal guardian.
+            </p>
+          )}
+          {guardianRows.map((g, i) => {
+            const update = (patch) =>
+              setGuardianRows((rows) => rows.map((r, n) => (n === i ? { ...r, ...patch } : r)));
+            return (
+              <div key={g.id || `new-${i}`} style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1.3fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
+                <div>
+                  {i === 0 && fieldLabel("Name")}
+                  <input value={g.name} onChange={(e) => update({ name: e.target.value })} placeholder="Full name" style={inputStyle} />
+                </div>
+                <div>
+                  {i === 0 && fieldLabel("Relationship")}
+                  <select value={g.relationship} onChange={(e) => update({ relationship: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
+                    <option value="">—</option>
+                    {GUARDIAN_RELATIONSHIPS.map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div>
+                  {i === 0 && fieldLabel("Phone")}
+                  <input value={g.phone} onChange={(e) => update({ phone: formatPhone(e.target.value) })} placeholder="(609)555-0143" style={inputStyle} />
+                </div>
+                <div>
+                  {i === 0 && fieldLabel("Email")}
+                  <input value={g.email} onChange={(e) => update({ email: e.target.value })} placeholder="Email" style={inputStyle} />
+                </div>
+                <button
+                  onClick={() => setGuardianRows((rows) => rows.filter((_, n) => n !== i))}
+                  title="Remove this guardian"
+                  style={{ ...btnSecondary, padding: "9px 12px", fontSize: 12, color: "#f87171", borderColor: "#f8717133" }}
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
+          <button
+            onClick={() => setGuardianRows((rows) => [...rows, { name: "", relationship: "", phone: "", email: "" }])}
+            style={{ ...btnSecondary, padding: "7px 14px", fontSize: 12 }}
+          >
+            + Add Guardian
+          </button>
+          {guardianRows.length > 0 && (
+            <p style={{ color: "#475569", fontSize: 11, margin: "8px 0 0" }}>
+              Rows left blank are discarded on save. Removing a row deletes that guardian.
+            </p>
+          )}
+        </>
+      ))}
+
       {/* Assignments are rows in their own table, so they can only be edited on a
           client that already exists — hence this block is edit-mode only. */}
       {editingClientId && formSection("Assigned DSPs", (
@@ -651,7 +789,7 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
             <thead>
-              <tr>{["Client", "Age / Sex", "Phone", "Address", "Started", "Assigned DSPs", "Support Coordinator", "Status", ""].map((h) => <th key={h} style={th}>{h}</th>)}</tr>
+              <tr>{["Client", "Age / Sex", "Phone", "Guardian", "Started", "Assigned DSPs", "Support Coordinator", "Status", ""].map((h) => <th key={h} style={th}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {filteredClients.map((c) => {
@@ -665,7 +803,25 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
                     </td>
                     <td style={{ ...cell, whiteSpace: "nowrap" }}>{c.age || "—"}{c.sex ? ` · ${c.sex}` : ""}</td>
                     <td style={{ ...cell, whiteSpace: "nowrap" }}>{showPhone(c.phone_number) || "—"}</td>
-                    <td style={{ ...cell, fontSize: 12, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.address || "—"}</td>
+                    <td style={{ ...cell, fontSize: 12, maxWidth: 190 }}>
+                      {(() => {
+                        const gs = guardiansByClient[c.id] || [];
+                        if (!gs.length) return dash;
+                        const [first, ...rest] = gs;
+                        return (
+                          <>
+                            <div style={{ color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {first.name}
+                              {first.relationship ? <span style={{ color: "#64748b" }}> · {first.relationship}</span> : null}
+                            </div>
+                            <div style={{ color: "#64748b" }}>
+                              {showPhone(first.phone) || "no phone"}
+                              {rest.length > 0 && <span style={{ color: "#a78bfa" }}> +{rest.length} more</span>}
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </td>
                     <td style={{ ...cell, whiteSpace: "nowrap" }}>{c.date_service_started || "—"}</td>
                     <td style={{ ...cell }}>
                       {mine.length === 0 ? dash : (
@@ -969,6 +1125,32 @@ export default function CareManagementTab({ supabase, onAlertCount }) {
           {detailRow("Service started", c.date_service_started)}
           {detailRow("Time in service", durationLabel(daysSince(c.date_service_started)))}
         </div>
+
+        {(() => {
+          const gs = guardiansByClient[c.id] || [];
+          return (
+            <>
+              <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+                Legal Guardians ({gs.length})
+              </div>
+              <div style={{ marginBottom: 18 }}>
+                {gs.length === 0 ? (
+                  <p style={{ color: "#475569", fontSize: 13, margin: 0 }}>No legal guardian on record.</p>
+                ) : gs.map((g) => (
+                  <div key={g.id} style={{ background: "#0f172a", borderRadius: 8, padding: 12, marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <strong style={{ color: "#e2e8f0", fontSize: 13 }}>{g.name}</strong>
+                      {g.relationship && <Badge text={g.relationship} color="#a78bfa" />}
+                    </div>
+                    <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>
+                      {showPhone(g.phone) || "no phone"} · <span style={{ color: "#7dd3fc" }}>{g.email || "no email"}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          );
+        })()}
 
         <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Support Coordinator</div>
         <div style={{ marginBottom: 18 }}>
